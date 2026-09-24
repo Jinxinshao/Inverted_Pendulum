@@ -29,8 +29,9 @@ def test_hardware_loop_balances_fake_rig(protocol, tmp_path):
     th = threading.Thread(target=loop.run)
     th.start()
     t0 = time.time()
-    while loop.live.state != "ACTIVE" and time.time() - t0 < 10:
+    while loop.live.state not in ("ARMED", "ACTIVE") and time.time() - t0 < 10:
         time.sleep(0.01)
+    time.sleep(0.5)  # a slow hand: the loop must wait for the release, not start under a held rod
     rig.release()
     th.join(timeout=20)
     try:

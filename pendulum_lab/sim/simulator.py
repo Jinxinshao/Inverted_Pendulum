@@ -191,7 +191,7 @@ class Simulation:
         """Advance one control period. Returns False when the run is over."""
         if self.finished:
             return False
-        c, p = self.cfg, self.p
+        c = self.cfg
         self._apply_disturbances()
 
         # ---- measurement (what the PC receives at t_k)

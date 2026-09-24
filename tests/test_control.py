@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from pendulum_lab.control.analysis import analyse, closed_loop_matrix, delay_margin
-from pendulum_lab.control.controllers import LQR, AnglePD, CascadePID, LinearLaw, PolePlacement
+from pendulum_lab.control.controllers import LQR, CascadePID, LinearLaw, PolePlacement
 from pendulum_lab.control.discrete import ackermann, augment, discretize_with_delay
 from pendulum_lab.model.dynamics import linear_model
 from pendulum_lab.model.params import default_params

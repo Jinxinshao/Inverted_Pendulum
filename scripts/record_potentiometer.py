@@ -128,7 +128,13 @@ def main():
         down = sum(r[1] for r in rest) / len(rest)
         valid = [r[1] for r in swing if 20 < r[1] < 4075]
         if valid:
-            amp = max(abs(x - down) for x in valid) / COUNTS_PER_DEG
+            turn = 4095 * 360 / 345  # counts for one full turn of the resistive track (wrap-around)
+
+            def dev(x):
+                d = (x - down) % turn
+                return min(d, turn - d)
+
+            amp = max(dev(x) for x in valid) / COUNTS_PER_DEG
             print(f"   下垂读数 {down:.1f}，有效区内最大偏离约 {amp:.0f}°（下垂一侧有约 15° 电位器死区，属正常）")
     print(f"已保存 {out}（{len(rows)} 行）")
     print("分析：python -m pendulum_lab identify --csv " + out)

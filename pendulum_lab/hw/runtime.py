@@ -11,7 +11,13 @@ Modes
 * ``closed``  - sends the velocity command to the PD42S1 every period.
 
 Sequence: PREFLIGHT -> WAIT_ARM (rod held within +-arm_deg for arm_time)
-          -> ACTIVE -> STOPPING (ramp to zero) -> DONE
+          -> ARMED ("release now"; motor still at zero)
+          -> ACTIVE as soon as the rod moves freely (> release_deg from the held angle)
+          -> STOPPING (ramp to zero) -> DONE
+Why release-triggered: if control starts while a hand still holds the rod, the
+cart accelerates under a rod that cannot respond, and the Kalman filter learns
+that as a zero bias; measured on the fake rig, holding 0.2 s after a timed start
+made LQR and PID hit the soft limit (docs/05 step 7).
 Any exception, Ctrl+C or GUI stop goes to STOPPING; if the zero-speed
 command cannot be delivered the operator is told to cut the 12 V supply.
 """
@@ -47,6 +53,9 @@ class RunOptions:
     duration: float = 60.0        # s of ACTIVE control
     arm_deg: float = 3.0
     arm_time: float = 1.0
+    arm_mode: str = "release"     # 'release': start when the rod moves freely; 'timer': start right after arm_time
+    release_deg: float = 0.4      # deviation from the held angle that counts as "released" (3 samples, same sign)
+    release_timeout: float = 5.0
     x_ref: float = 0.0
     min_sensor_rate_ratio: float = 0.95   # sensor rate must be >= this * 1/Ts
     log_path: str | None = None
@@ -163,11 +172,13 @@ class HardwareLoop:
         state = "WAIT_ARM"
         self._set_state(state, f"hold the rod within +-{o.arm_deg:.0f} deg of upright for {o.arm_time:.1f} s")
         arm_since = None
+        hold_buf: deque = deque(maxlen=max(3, int(0.3 / Ts)))
+        theta_hold = armed_at = prev_dev = 0.0
+        dev_run = 0
         t_active = None
         x_virtual = 0.0
         a_prev = 0.0
         u_hist: deque = deque([0.0] * 32, maxlen=32)
-        last_seq = -1
         timer = PeriodicTimer(Ts)
         t_prev = time.perf_counter()
         try:
@@ -182,28 +193,59 @@ class HardwareLoop:
                     theta_m = self.calib.theta(s.adc)
 
                     # cart position: encoder if available, else dead reckoning of commands
-                    if self.motor is not None and o.mode == "closed" and self.motor.position is not None:
+                    if (self.motor is not None and o.mode == "closed" and self.motor.feedback_every
+                            and self.motor.position is not None):
                         x_m = self.motor.position[1]
                     else:
                         x_m = x_virtual
 
-                    if state == "WAIT_ARM":
+                    if state in ("WAIT_ARM", "ARMED"):
                         if self.stop_request.is_set():
                             state = "DONE"
                             break
-                        if abs(theta_m) < math.radians(o.arm_deg):
-                            arm_since = arm_since or now
-                            if now - arm_since >= o.arm_time:
-                                state = "ACTIVE"
-                                t_active = now
-                                self.est.reset(theta_m, x_m)
-                                self.ctrl.reset()
-                                self.integ.reset(0.0)
-                                x_virtual = 0.0
-                                self._set_state(state, f"control ON ({o.algorithm}, {o.mode}) - release the rod gently")
-                        else:
-                            arm_since = None
-                        last_seq = s.seq
+                        inside = abs(theta_m) < math.radians(o.arm_deg)
+                        go = False
+                        if state == "WAIT_ARM":
+                            if inside:
+                                arm_since = arm_since or now
+                                hold_buf.append(theta_m)
+                                if now - arm_since >= o.arm_time:
+                                    if o.arm_mode == "timer" or o.mode == "shadow":  # shadow: nothing moves
+                                        go = True
+                                    else:
+                                        state = "ARMED"
+                                        theta_hold = sum(hold_buf) / len(hold_buf)
+                                        armed_at = now
+                                        dev_run = 0
+                                        self._set_state(state, "RELEASE the rod now - control starts when it moves freely")
+                            else:
+                                arm_since = None
+                                hold_buf.clear()
+                        else:  # ARMED: start as soon as the rod is FREE (a held rod would fool the estimator)
+                            dev = theta_m - theta_hold
+                            if abs(dev) > math.radians(o.release_deg):
+                                dev_run = dev_run + 1 if (dev_run == 0 or (dev > 0) == (prev_dev > 0)) else 1
+                                prev_dev = dev
+                            else:
+                                dev_run = 0
+                            if dev_run >= 3 or not inside:
+                                go = inside
+                                if not inside:  # moved out of the window before we started: re-arm
+                                    state, arm_since = "WAIT_ARM", None
+                                    hold_buf.clear()
+                                    self._set_state(state, "rod left the window - hold it upright again")
+                            elif now - armed_at > o.release_timeout:
+                                state, arm_since = "WAIT_ARM", None
+                                hold_buf.clear()
+                                self._set_state(state, "no release detected - hold the rod upright again")
+                        if go:
+                            state = "ACTIVE"
+                            t_active = now
+                            self.est.reset(theta_m, x_m)
+                            self.ctrl.reset()
+                            self.integ.reset(0.0)
+                            x_virtual = 0.0
+                            self._set_state(state, f"control ON ({o.algorithm}, {o.mode})")
                         self._log(now, dt, state, s, age, theta_m, x_m, None, 0.0, 0.0)
                         continue
 

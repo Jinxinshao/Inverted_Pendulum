@@ -185,7 +185,7 @@ class FakeRig(threading.Thread):
             if code == 0xF1:
                 if len(payload) != 6:
                     return False, b""
-                direction, _acc = payload[0], payload[1]
+                direction = payload[0]  # payload[1] = accel byte (ignored: the twin uses DriverModel)
                 rpm = struct.unpack(">f", payload[2:6])[0]
                 if self.enabled and not self.braked and self.mode == 1:
                     self.v_target = (-rpm if direction else rpm) / self.spm

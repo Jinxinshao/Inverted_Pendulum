@@ -77,6 +77,8 @@ class App(tk.Tk):
         super().__init__()
         self.title("倒立摆计算机控制教学平台 - 数字孪生 / 实物运行")
         self.geometry("1400x900")
+        if config_path is None and (ROOT / "config" / "physical_config.json").exists():
+            config_path = str(ROOT / "config" / "physical_config.json")  # the rig's calibration, if made
         self.config_path = config_path
         self.cfg = load_config(config_path)
         self.sim: Simulation | None = None
@@ -92,14 +94,24 @@ class App(tk.Tk):
         self.speed = tk.DoubleVar(value=1.0)
         self.x_ref = tk.DoubleVar(value=0.0)
         self.status = tk.StringVar(value="就绪")
+        self.adapt = tk.StringVar(value="off")
+        self.excite = tk.BooleanVar(value=True)
+        self.true_w0 = tk.StringVar(value=f"{self.cfg['plant']['omega0']:.4f}")
 
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True)
         self.tab_sim = ttk.Frame(nb)
         self.tab_ana = ttk.Frame(nb)
         self.tab_hw = ttk.Frame(nb)
+        from .driver_tab import DriverTab
+        from .ident_tab import IdentTab
+
+        self.tab_drv = DriverTab(nb, self)
+        self.tab_id = IdentTab(nb, self)
         nb.add(self.tab_sim, text="  数字孪生仿真  ")
         nb.add(self.tab_ana, text="  闭环分析  ")
+        nb.add(self.tab_id, text="  参数辨识  ")
+        nb.add(self.tab_drv, text="  驱动器  ")
         nb.add(self.tab_hw, text="  实物运行  ")
         self._build_sim_tab()
         self._build_analysis_tab()
@@ -167,6 +179,13 @@ class App(tk.Tk):
             ("dlat", "设计假设延迟 [ms]", (("loop", "latency_estimate"), 1000)),
         ], C)
         self.form_twin.pack(fill="x")
+        ttk.Label(box3, text="孪生“真实”ω0 [rad/s]（≠模型 → 模型误差）").pack(anchor="w")
+        ttk.Entry(box3, textvariable=self.true_w0, width=10).pack(anchor="w")
+
+        box4 = ttk.LabelFrame(left, text="在线辨识 / 自整定（RLS）", padding=4)
+        box4.pack(fill="x", pady=4)
+        ttk.Combobox(box4, textvariable=self.adapt, values=["off", "monitor", "update"], state="readonly", width=10).pack(anchor="w")
+        ttk.Checkbutton(box4, text="已知激励：x_ref ±3 cm 方波", variable=self.excite).pack(anchor="w")
 
         btns = ttk.Frame(left)
         btns.pack(fill="x", pady=6)
@@ -266,7 +285,21 @@ class App(tk.Tk):
         except Exception as e:  # noqa: BLE001
             messagebox.showerror("设计失败", f"{type(e).__name__}: {e}")
             return
-        self.sim = Simulation(p, sc, ctl, est)
+        adapter = None
+        p_true = p
+        try:
+            w_true = float(self.true_w0.get())
+            if abs(w_true - p.omega0) > 1e-9:
+                from dataclasses import replace
+
+                p_true = replace(p, omega0=w_true)  # deliberate model error in the twin
+        except ValueError:
+            pass
+        if self.adapt.get() != "off" and name != "swingup":
+            from ..control.online_id import AdaptiveUpdater
+
+            adapter = AdaptiveUpdater(p, c, name, self.adapt.get(), excitation_amp=0.03 if self.excite.get() else 0.0)
+        self.sim = Simulation(p_true, sc, ctl, est, adapter)
         self.running = False
         self.run_btn.config(text="▶ 运行")
         self._update_info(ctl, p, c)
@@ -340,7 +373,12 @@ class App(tk.Tk):
         th, x = s.theta, s.x_c
         self._draw_cart(self.__dict__, x, th, s.x_ref)
         ev = s.events[-1] if s.events else ""
-        self.txt.set_text(f"t={s.t:6.2f}s θ={math.degrees(th):+6.2f}° x={x * 100:+6.1f}cm\n{ev[:60]}")
+        extra = ""
+        if s.adapter is not None:
+            a = s.adapter
+            extra = (f"  ω0^={a.rls.omega0:.3f}±{a.rls.omega0_std:.3f} (真 {s.p.omega0:.3f}, 设计 {a.p_design.omega0:.3f}"
+                     f"{', 可信' if a.trustworthy else ''})")
+        self.txt.set_text(f"t={s.t:6.2f}s θ={math.degrees(th):+6.2f}° x={x * 100:+6.1f}cm{extra}\n{ev[:70]}")
         if L["t"]:
             t = np.asarray(L["t"])
             i0 = np.searchsorted(t, t[-1] - WINDOW_S)
@@ -436,6 +474,11 @@ class App(tk.Tk):
         ttk.Radiobutton(left, text="影子模式（只读，不动电机）", value="shadow", variable=self.hw_mode).pack(anchor="w")
         ttk.Radiobutton(left, text="闭环（电机会运动！）", value="closed", variable=self.hw_mode).pack(anchor="w")
         ttk.Radiobutton(left, text="模拟实物（SIL 演示）", value="sil", variable=self.hw_mode).pack(anchor="w")
+        self.hw_adapt = tk.StringVar(value="monitor")
+        self.hw_excite = tk.BooleanVar(value=False)
+        ttk.Label(left, text="在线辨识 ω0").pack(anchor="w", pady=(6, 0))
+        ttk.Combobox(left, textvariable=self.hw_adapt, values=["off", "monitor", "update"], state="readonly", width=12).pack(anchor="w")
+        ttk.Checkbutton(left, text="辨识激励 x_ref ±3 cm 方波", variable=self.hw_excite).pack(anchor="w")
         ttk.Button(left, text="开始", command=self._hw_start).pack(fill="x", pady=(8, 2))
         tk.Button(left, text="停  止", bg="#c62828", fg="white", font=("", 16, "bold"), height=2,
                   command=self._hw_stop).pack(fill="x", pady=4)
@@ -472,18 +515,21 @@ class App(tk.Tk):
             if mode in ("shadow", "closed"):
                 calibration_from(cfg["hardware"])  # raises if not calibrated
             if mode == "closed":
-                from ..hw.pd42s1 import Protocol
+                from ..hw.motor import CartUnits
 
-                miss = Protocol.load(ROOT / cfg["hardware"]["protocol_file"]).missing_for_motion()
-                if miss:
-                    raise RuntimeError(f"协议表未完成/未验证: {miss}（见 docs/07）")
+                CartUnits.from_config(cfg["hardware"])  # raises if the belt is not calibrated
+                # the driver readiness (speed mode, enabled, voltage, stall) is checked by the
+                # control process before arming; the 驱动器 tab's 一键准备 fixes most problems
                 if not messagebox.askyesno("闭环确认", "小车将会运动。\n12 V 开关在手边？导轨上无障碍？扶好摆杆？"):
                     return
         except Exception as e:  # noqa: BLE001
             messagebox.showerror("无法开始", str(e))
             return
         log = str(ROOT / "data" / f"gui_{algo}_{mode}_{time.strftime('%Y%m%d_%H%M%S')}.csv")
-        self.hw_loop = LoopProcess(cfg, mode, algo, dur, self.hw_sensor.get(), self.hw_motor.get(), log)
+        if self.tab_drv.connected:
+            self.tab_drv.disconnect()  # the control process needs the motor port
+        self.hw_loop = LoopProcess(cfg, mode, algo, dur, self.hw_sensor.get(), self.hw_motor.get(), log,
+                                   adapt=self.hw_adapt.get(), excitation=0.03 if self.hw_excite.get() else 0.0)
         self.hw_loop.start()
         self.hw_state.set("控制进程启动中…")
 
@@ -519,6 +565,20 @@ class App(tk.Tk):
             self.hw_last = lp
             self.hw_loop = None
             self.status.set(f"实物运行结束: {lp.done[0]}；日志 {lp.done[2]}")
+
+    def save_hardware_config(self) -> str:
+        """Write hardware calibration + plant parameters into the physical config file."""
+        import json
+        from pathlib import Path
+
+        path = Path(self.config_path) if self.config_path else ROOT / "config" / "physical_config.json"
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data.setdefault("hardware", {}).update(self.cfg["hardware"])
+        data["plant"] = dict(self.cfg["plant"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        self.config_path = str(path)
+        return str(path)
 
     def _on_close(self):
         if self.hw_loop is not None:

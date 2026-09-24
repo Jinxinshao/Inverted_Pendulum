@@ -1,16 +1,19 @@
 # 倒立摆计算机控制教学平台（Inverted_Pendulum）
 
-一套面向课堂的**计算机控制系统**教学软件，对象是学生自制的“步进电机 + 同步带 + 小车 + 电位器 + 钢管摆杆”一级倒立摆。平台由三部分组成：
+一套面向课堂的**计算机控制系统**教学软件，对象是学生自制的“步进电机 + 同步带 + 小车 + 电位器 + 钢管摆杆”一级倒立摆。平台由以下部分组成：
 
 1. **数字孪生仿真**：非线性模型，含采样、延迟、量化噪声、驱动器滞后、皮带间隙、导轨端点等非理想因素。可以实时或慢动作演示 PD、串级 PID、LQR、极点配置和能量起摆。
 2. **闭环分析**：给出增益、z 平面闭环极点和延迟裕度。线性理论和仿真结果并列展示。
-3. **实物实时控制**：PC 以 200 Hz 读取电位器角度，经 PD42S1 闭环步进驱动器的**通信速度模式**驱动小车。支持影子模式（只读、电机不动）、闭环模式，以及不需要硬件的软件在环（SIL）演示。
+3. **参数辨识**：自由摆动录制与三种离线辨识方法，结果一键更新模型、重新设计全部控制器；平衡时还可做在线 RLS 辨识与自整定（带已知激励和安全判据）。
+4. **驱动器页**：原厂上位机所需功能的自主实现，包括使能/失能、刹车/清除状态、速度模式、点动、系统参数、限位、皮带标定向导和指令日志。
+5. **实物实时控制**：PC 以 200 Hz 读取电位器角度，经 PD42S1 **通信速度模式**驱动小车。支持影子模式（只读、电机不动）、闭环模式，以及不需要硬件的软件在环（SIL）演示。
 
 > **当前状态：请务必先读这一段**
-> - 仿真、分析、GUI、全部硬件代码路径都已完成，52 项自动测试全部通过。硬件路径包括串口解析、PD42S1 帧编解码、电机线程、实时循环和安全监督。
-> - PD42S1 帧格式 `C5 | 地址 | 功能码 | 数据 | sum8 | 5C` 已与原厂上位机日志中的 10 帧**逐字节核对**。
-> - **速度指令 `set_speed` 与读位置 `read_position` 的功能码和数据布局尚未填写。** 手头没有 PD42S1 手册的指令表，软件不会猜测。填写并验证之前，所有会让电机运动的命令都会被拒绝。操作步骤见 [docs/07](docs/07_PD42S1通信协议适配.md)。
-> - 本软件**尚未在您的实物上通电运动验证**。实物闭环前必须按 [docs/05](docs/05_实物调试流程.md) 逐步完成标定和安全检查。
+> - 仿真、分析、参数辨识、GUI、全部硬件代码路径均已完成，自动测试全部通过。
+> - PD42S1 驱动按《自定义串口协议 V1.2》《modbus-rtu 协议 V1.2》实现，**两种协议都支持**。原厂上位机两张日志截图中的全部帧都已逐字节核对，并能逐项解释（见 [docs/07](docs/07_PD42S1通信协议适配.md)）。
+> - 使用顺序遵循手册与您的实测：使能后才能动；刹车会锁存，要“清除电机状态 + 使能”才能恢复。GUI“驱动器”页与命令 `driver prepare` 会自动完成。
+> - 本软件**尚未在您的实物上通电运动验证**。闭环前请按 [docs/05](docs/05_实物调试流程.md) 逐步完成标定和安全检查。
+> - 出于安全考虑，实物只做“扶起后保持平衡”；能量起摆仅在仿真中提供。
 
 ## 1 分钟上手（Windows，Conda 或普通 Python ≥ 3.9，推荐 3.11+）
 
@@ -32,9 +35,13 @@ python -m pendulum_lab design --png poles.png       :: 各算法增益、闭环�
 python -m pendulum_lab compare --kick 5:0.5 --png cmp.png   :: 同一场景对比 PD/PID/LQR/极点配置
 python -m pendulum_lab simulate --algo swingup --duration 15 --png swing.png
 python -m pendulum_lab sil --algo lqr               :: 用"模拟实物"跑一遍实时硬件代码路径
+python scripts\record_potentiometer.py --port COM12 :: 独立录制程序：90° 松手录 60 s（只需 pyserial）
+python -m pendulum_lab identify --csv swing_xxx.csv :: 自由摆动辨识（三种方法对比）
 python -m pendulum_lab diagnose --sensor COM12      :: 只读：角度传感器速率/噪声/格式
-python -m pendulum_lab probe --motor COM11 --rate-hz 5 --count 100 --csv data\probe.csv   :: 只读：驱动器通信误码率
-python -m pytest -q                                 :: 52 项自动测试
+python -m pendulum_lab diagnose --motor COM11 --protocol modbus   :: 只读：驱动器版本、参数、就绪检查
+python -m pendulum_lab driver prepare --motor COM11 --protocol modbus   :: 速度模式+清除状态+使能
+python examples\benchmark.py                        :: 算法与辨识方法的系统比较 -> docs/benchmark_results.md
+python -m pytest -q                                 :: 自动测试
 ```
 
 ## 由您的测量得到的关键物理结论
@@ -65,6 +72,7 @@ python -m pytest -q                                 :: 52 项自动测试
 | [06 教学实验指导书](docs/06_教学实验指导书.md) | 10 个课堂实验（仿真 + 实物），含思考题 |
 | [07 PD42S1 通信协议适配](docs/07_PD42S1通信协议适配.md) | 帧格式、从手册填写指令表、对照原厂日志验证 |
 | [08 常见问题与故障排查](docs/08_常见问题与故障排查.md) | 命令拼写、串口、4.47 V、漂移、振荡、极限环等 |
+| [基准结果](docs/benchmark_results.md) | 5 种控制器 × 10 种非理想场景；7 种辨识方法对比（自动生成） |
 
 ## 工程结构
 
@@ -75,19 +83,21 @@ pendulum_lab/
               estimators.py 微分/卡尔曼(零偏)/起摆估计 | analysis.py 闭环极点、延迟裕度
               actuator.py 加速度→速度指令 | safety.py 安全监督（仿真与实物共用）
   sim/        simulator.py 数字孪生
-  hw/         pd42s1.py 帧编解码+指令表 | sensor.py 角度串口 | motor.py 电机线程 | runtime.py 实时循环
-              process.py GUI 独立控制进程 | timing.py 高精度定时 | fake.py 模拟实物(SIL)
+  control/online_id.py  状态变量滤波、最小二乘辨识、在线 RLS、自整定
+  hw/         pd42s1.py 两种协议编解码+全部命令 | sensor.py 角度串口 | motor.py 电机线程+单位换算
+              runtime.py 实时循环 | process.py GUI 独立控制进程 | timing.py 高精度定时 | fake.py 按手册仿真的驱动器(SIL)
   tools/      hwtools.py 诊断/标定/阶跃测试 | plotting.py 作图
-  gui/app.py  Tkinter 图形界面
+  gui/        app.py 主界面 | driver_tab.py 驱动器页 | ident_tab.py 参数辨识页
   cli.py      命令行
-config/       pd42s1_protocol.json 驱动器指令表 | physical_config.example.json 实物配置模板
+config/       physical_config.example.json 实物配置模板（标定后生成 physical_config.json）
+scripts/      record_potentiometer.py 独立的电位器录制程序
 docs/         说明文档与图
-examples/     make_teaching_figures.py 重新生成文档配图
-tests/        自动测试（含对原厂日志帧的逐字节核对、SIL 实时测试）
+examples/     make_teaching_figures.py 文档配图 | benchmark.py 系统比较
+tests/        自动测试（原厂日志帧逐字节核对、两种协议的 SIL 实时测试、辨识全链路测试）
 ```
 
 ## 安全
 
 - 12 V 电源开关就是急停，必须放在操作者手边。建议串接蘑菇头急停。
-- **通信中断时驱动器会保持最后的速度指令**（速度模式的固有特性）。PC 死机、USB 被拔都可能让小车冲向端点，所以两端必须有**独立于 PC 的硬件限位**，能切断电源或使能。见 docs/05 第 0 步。
+- **通信中断时驱动器会保持最后的速度指令**（速度模式的固有特性）。PC 死机、USB 被拔都可能让小车冲向端点。驱动器支持左右限位开关（0x99），请低速验证其在速度模式下有效后再启用；12 V 开关始终是最终急停。见 docs/05 第 0 步、docs/07 第 7.5 节。
 - 软件停车方式是速度指令斜坡减到 0。`FC` 刹车会锁存，只作最后手段。

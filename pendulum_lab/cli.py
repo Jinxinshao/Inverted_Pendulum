@@ -6,13 +6,12 @@ from __future__ import annotations
 
 import argparse
 import copy
-import json
 import math
 import sys
 from pathlib import Path
 
 from . import __version__
-from .config import ALGORITHMS, ROOT, load_config, make_controller, make_estimator, plant_from, sim_config_from, swingup_overrides
+from .config import ALGORITHMS, load_config, make_controller, make_estimator, plant_from, sim_config_from, swingup_overrides
 
 
 def _cfg(args) -> dict:
@@ -74,7 +73,7 @@ def identify_csv(path: str, cfg: dict, min_amp: float = 5.0, out=print) -> dict:
     inside = (adc[idx] >= lo - 50) & (adc[idx] <= hi + 50)
     side = int(np.sign(np.sum(np.sign(ve[inside])))) or 1
     out(f"non-wrapped side: {'+' if side > 0 else '-'} ({inside.sum()} of {len(te)} extrema read without wrap)")
-    fits = {}
+    fits: dict = {"side": side}
     fits["one_sided"] = fo = fit_free_decay_one_sided(t, phi, side, min_amp_deg=min_amp)
     out("method A1 (same-side extrema, full cycles, energy balance)  [recommended]: " + fo.summary())
     try:
@@ -147,7 +146,6 @@ def cmd_design(args) -> None:
 # -------------------------------------------------------------- simulation
 def _apply_overrides(cfg: dict, a) -> dict:
     cfg = copy.deepcopy(cfg)
-    s = cfg["sim"]
     for key, path in (
         ("Ts", ("loop", "Ts")), ("design_latency", ("loop", "latency_estimate")), ("design_tau", ("loop", "actuator_tau")),
         ("duration", ("sim", "duration")), ("theta0", ("sim", "theta0_deg")), ("latency", ("sim", "driver", "latency")),
@@ -456,9 +454,9 @@ def cmd_sil(args) -> None:
                                                         adapt=args.adapt), AngleCalibration())
     th = threading.Thread(target=loop.run)
     th.start()
-    while loop.live.state not in ("ACTIVE", "DONE"):
+    while loop.live.state not in ("ARMED", "ACTIVE", "DONE"):
         time.sleep(0.01)
-    time.sleep(0.2)
+    time.sleep(0.3)  # the simulated hand lets go a little after the "release now" prompt
     rig.release()
     th.join()
     print(f"fake rig ({proto}): theta={math.degrees(rig.theta):+.2f} deg, x={rig.x * 100:+.2f} cm, crashed={rig.crashed}, "

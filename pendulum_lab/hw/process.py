@@ -60,7 +60,9 @@ def _build_and_run(spec: dict, q, stop_ev) -> None:  # runs in the child process
         if motor is not None:
             motor.start()
             objs.insert(0, motor)
-        loop = HardwareLoop(cfg, sensor, motor, RunOptions(spec["algo"], run_mode, spec["duration"], log_path=spec["log"]),
+        loop = HardwareLoop(cfg, sensor, motor, RunOptions(spec["algo"], run_mode, spec["duration"], log_path=spec["log"],
+                                                            adapt=spec.get("adapt", "monitor"),
+                                                            excitation_amp=spec.get("excitation", 0.0)),
                             calib, printer=lambda m: q.put(("msg", m)))
 
         def forward():
@@ -75,7 +77,7 @@ def _build_and_run(spec: dict, q, stop_ev) -> None:  # runs in the child process
                     q.put(("rows", loop.rows[sent:n]))
                     sent = n
                 q.put(("state", st, msg))
-                if rig is not None and st == "ACTIVE" and rig.hold_rod:
+                if rig is not None and st in ("ARMED", "ACTIVE") and rig.hold_rod:
                     rig.release()
                 if st == "DONE":
                     return
@@ -101,13 +103,14 @@ def _build_and_run(spec: dict, q, stop_ev) -> None:  # runs in the child process
 
 class LoopProcess:
     def __init__(self, cfg: dict, mode: str, algo: str, duration: float, sensor_port: str = "", motor_port: str = "",
-                 log: str | None = None):
+                 log: str | None = None, adapt: str = "monitor", excitation: float = 0.0):
         ctx = mp.get_context("spawn")
         self.q = ctx.Queue()
         self.stop_ev = ctx.Event()
         if log:
             Path(log).parent.mkdir(parents=True, exist_ok=True)
-        spec = dict(cfg=cfg, mode=mode, algo=algo, duration=duration, sensor_port=sensor_port, motor_port=motor_port, log=log)
+        spec = dict(cfg=cfg, mode=mode, algo=algo, duration=duration, sensor_port=sensor_port, motor_port=motor_port, log=log,
+                    adapt=adapt, excitation=excitation)
         self.proc = ctx.Process(target=_build_and_run, args=(spec, self.q, self.stop_ev), daemon=True)
         self.rows: list = []
         self.state, self.message = "STARTING", ""
