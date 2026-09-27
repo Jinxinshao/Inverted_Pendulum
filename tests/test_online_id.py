@@ -132,3 +132,21 @@ def test_hand_taps_are_detected_and_block_updates():
 def test_no_excitation_no_update():
     r, ad = _adaptive_run(5.0, excitation=False)
     assert ad.p_design.omega0 == pytest.approx(W_NOM, abs=1e-6)
+
+
+def test_second_recording_with_the_rod_held_during_the_rest_phase():
+    """GUI recording 2026-09-27 17:09: the rod was held at ~90 deg during the 'rest' phase,
+    so the rest reading (928) is not the bottom. The swing centre replaces it; the result
+    must reproduce the first recording."""
+    from pathlib import Path
+
+    from pendulum_lab.cli import identify_csv
+
+    path = Path(__file__).parent / "data" / "swing_20260927_170933_gui.csv"
+    fits = identify_csv(str(path), load_config(), out=lambda m: None)
+    a = fits["A"]
+    assert a.stats["rest_ignored"]
+    assert a.omega0 == pytest.approx(5.5147, abs=0.004)
+    assert a.calibration.b == pytest.approx(4098.3, abs=3.0)
+    assert a.calibration.describe()["implied_upright_adc"] == pytest.approx(1968, abs=10)
+    assert a.damping.d > 0

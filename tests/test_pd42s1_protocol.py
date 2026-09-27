@@ -182,3 +182,52 @@ def test_driver_selftest_rehearsal(tmp_path):
     assert t.plus_side == "右"
     assert t.log_path.exists() and t.frames_path.exists()
     assert "01 06 00 62 00 01" in t.frames_path.read_text()     # set work mode 1 (06H, value in the low byte)
+
+
+def test_enable_state_semantics_from_the_rig_log():
+    """Self-test log 2026-09-27: motor enabled (official GUI: 电机使能), 0x31 byte 37 = 00 and
+    0x2F answered 00. The client used to read 0x2F as "1 = enabled" -> "电机未使能" always."""
+    sys_req = parse_hex("01 04 00 31 00 14 A1 CA")
+    sys_rx = parse_hex("01 04 28 41 C3 3A 80 00 00 40 74 F3 AA 3F DD 76 5E 40 82 9E BC 00 00 00 00 9E BB "
+                       "00 00 9E BB 00 00 00 00 00 00 00 00 00 00 00 00 E9 2D")
+    payload, err = check_modbus_reply(sys_req, sys_rx)
+    s = decode_system(unpad_read(payload, 39))
+    assert err == "" and s["enabled"] and s["bus_voltage_V"] == pytest.approx(24.4, abs=0.05)
+    en_req, en_rx = parse_hex("01 04 00 2F 00 01 00 03"), parse_hex("01 04 02 00 00 B9 30")
+    payload, err = check_modbus_reply(en_req, en_rx)
+    assert err == "" and unpad_read(payload, 1) == b"\x00"   # 0 while enabled
+
+
+@pytest.mark.parametrize("protocol", ["custom", "modbus"])
+def test_closed_loop_preflight_enables_a_disabled_driver(protocol):
+    """After drivertest (or a brake) the motor is disabled: preflight must run the official
+    clear -> enable -> zero-speed sequence itself and centre the soft limits at the start."""
+    import math
+
+    from pendulum_lab.config import load_config, plant_from
+    from pendulum_lab.hw.fake import FakeRig
+    from pendulum_lab.hw.motor import fake_units, make_worker
+    from pendulum_lab.hw.runtime import HardwareLoop, RunOptions
+    from pendulum_lab.hw.sensor import AngleCalibration, SensorReader
+
+    cfg = load_config()
+    rig = FakeRig(plant_from(cfg), protocol, theta0=math.radians(1.0))
+    rig.enabled, rig.braked = False, True
+    rig.x = 0.07                                   # cart put 7 cm off the old centre
+    rig.start()
+    sensor = SensorReader(rig.sensor_port)
+    sensor.start()
+    drv = PD42S1(rig.motor_port, protocol, timeout=0.05)
+    assert not drv.readiness()[0]
+    motor = make_worker(drv, cfg["hardware"], fake_units())
+    motor.start()
+    try:
+        loop = HardwareLoop(cfg, sensor, motor, RunOptions("lqr", "closed", 1.0), AngleCalibration(), printer=lambda m: None)
+        info = loop.preflight()
+        assert rig.enabled and not rig.braked
+        assert info["x0"] == pytest.approx(0.0, abs=1e-3)   # centre = start position
+        assert loop.sup.lim.x_soft == pytest.approx(0.25)
+    finally:
+        motor.stop()
+        sensor.stop()
+        rig.stop()

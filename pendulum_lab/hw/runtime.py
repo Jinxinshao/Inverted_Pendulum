@@ -130,10 +130,23 @@ class HardwareLoop:
                 "Raise the firmware output rate (docs/05 step 1) or increase loop.Ts and redesign."
             )
         if self.opts.mode == "closed":
-            ok, problems, dinfo = self.motor.drv.readiness()
+            drv = self.motor.drv
+            # the manual's usage rule: clear state -> enable -> zero speed before any motion
+            # (a disabled motor, e.g. after drivertest or after a brake, used to fail here)
+            done = drv.prepare_for_motion()
+            self.print("driver: " + " -> ".join(done))
+            ok, problems, dinfo = drv.readiness()
             info["driver"] = dinfo
             if not ok:
                 raise RuntimeError("PD42S1 not ready: " + "; ".join(problems))
+            cart = self.cfg["hardware"]["cart"]
+            if cart.get("center_mode", "start") == "start" or cart.get("center_counts") is None:
+                # the rail centre is where the operator put the cart before pressing start;
+                # the soft limits are +-x_soft around it
+                c = drv.read_position()
+                self.motor.units.center_counts = float(c)
+                info["center_counts"] = c
+                self.print(f"rail centre = start position (encoder {c}); soft limits +-{self.sup.lim.x_soft * 100:.0f} cm")
             # cart must start well inside the soft limits
             self.motor.read_position_now()
             if self.motor.position is None:

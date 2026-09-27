@@ -163,7 +163,7 @@ class FakeRig(threading.Thread):
                 if code == 0x2D:
                     return True, b"\x00"
                 if code == 0x2F:
-                    return True, bytes([1 if self.enabled else 0])
+                    return True, bytes([0 if self.enabled else 1])  # rig: 0 = enabled
                 if code == 0x24:
                     return True, struct.pack(">f", 12.1)
                 if code == 0x20:

@@ -128,7 +128,11 @@ class SwingAnalysis:
 
     def lines(self) -> list[str]:
         s, c = self.stats, self.calibration.describe()
-        out = [
+        out = []
+        if s.get("rest_ignored"):
+            out.append(f"注意：静止段读数 {s['rest_given']:.0f} 离摆动中心太远（录制时杆没有自然下垂？），"
+                       f"已改用摆动中心 {s['rest_adc']:.0f} 作参考")
+        out += [
             f"数据: {s['n_swing']} 个摆动样本, {s['rate_hz']:.1f} Hz, 剔除 {s['rejected_pct']:.1f} %"
             f"（死区/端点 {s['n_deadzone']}，毛刺 {s['n_glitch']}），{s['n_crossings']} 次过死区",
             f"释放角 {math.degrees(self.amp[0]):.1f}°，{len(self.amp)} 个转折点，末振幅 {math.degrees(self.amp[-1]):.1f}°",
@@ -150,6 +154,26 @@ class SwingAnalysis:
 
 
 # ---------------------------------------------------------------- helpers
+REST_TOL_COUNTS = 400.0   # ~34 deg: a rest reading further than this from the swing centre is not "hanging"
+
+
+def _circ_dist(a: float, b: float, n_turn: float = N_TURN_NOMINAL) -> float:
+    d = (a - b) % n_turn
+    return float(min(d, n_turn - d))
+
+
+def swing_centre(adc: np.ndarray, lo: float = 8, hi: float = 4087, n_turn: float = N_TURN_NOMINAL) -> float:
+    """Reading around which the rod swings (circular mean of the on-track samples of the
+    second half of the record; the hand-held start is excluded). Accurate to ~10 deg -
+    only used as the unwrap reference, the bottom itself is fitted later."""
+    a = np.asarray(adc, float)
+    a = a[len(a) // 2:]
+    a = a[(a >= lo) & (a <= hi)]
+    if len(a) < 10:
+        return float(np.median(adc))
+    ang = 2 * np.pi * a / n_turn
+    c = math.atan2(float(np.mean(np.sin(ang))), float(np.mean(np.cos(ang)))) % (2 * math.pi)
+    return c * n_turn / (2 * math.pi)
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
     d = np.diff(np.concatenate([[0], mask.astype(np.int8), [0]]))
     return list(zip(np.where(d == 1)[0], np.where(d == -1)[0]))
@@ -378,8 +402,13 @@ def analyse_swing(t: np.ndarray, adc: np.ndarray, rest_adc: float | None = None,
     while k0 < len(t) - 1 and t[k0 + 1] - t[k0] < 1e-6:
         k0 += 1
     t, adc = t[k0:], adc[k0:]
-    if rest_adc is None:  # no rest record: the saturated end next to the bottom is a good enough centre
-        rest_adc = float(np.median(adc[adc > hi])) if np.mean(adc > hi) > 0.01 else float(np.median(adc))
+    # the unwrap needs a reference near the bottom. The "rest" record is only trusted if it
+    # agrees with the centre of the swing itself (2026-09-27, 2nd recording: the rod was held
+    # at 90 deg during the rest phase -> reference 928 instead of ~4092 -> omega0 = 6.4)
+    centre = swing_centre(adc, lo, hi)
+    rest_given = rest_adc
+    if rest_adc is None or _circ_dist(rest_adc, centre) > REST_TOL_COUNTS:
+        rest_adc = centre
     u, w = unwrap_reading(adc, rest_adc)
     valid, n_dead, n_glitch = clean_samples(adc, u, lo, hi)
     tp, up, kind = turning_points(t, u, valid, min_prom=math.radians(min_amp_deg) * K_NOMINAL)
@@ -420,6 +449,7 @@ def analyse_swing(t: np.ndarray, adc: np.ndarray, rest_adc: float | None = None,
         "n_swing": int(len(t)), "rate_hz": float((len(t) - 1) / (t[-1] - t[0])),
         "n_deadzone": n_dead, "n_glitch": n_glitch, "rejected_pct": 100.0 * float(np.mean(~valid)),
         "n_crossings": crossings, "n_full_cycles": n_cyc, "rest_adc": rest_adc, "skipped_backlog": k0,
+        "rest_ignored": rest_given is not None and rest_given != rest_adc, "rest_given": rest_given,
     }
     stats["K_se"] = se_K
     return SwingAnalysis(omega0, T0, T0_std, omega0 * (se_T0 if se_T0 == se_T0 else T0_std / math.sqrt(max(n_cyc, 1))) / T0, cal,

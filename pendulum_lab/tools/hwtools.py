@@ -313,27 +313,28 @@ def cart_calibrate_interactive(drv: PD42S1, rpm: float = 20.0, t_move: float = 1
     +x is DEFINED as the direction the cart moves for a positive (正转) speed, so
     sign = +1; the encoder direction is checked. Result: meters_per_rev.
     """
-    out("1) Put the cart at the MIDDLE of the rail, mark its position with tape, keep hands clear, press Enter.")
-    ask()
+    out("1) 小车推到导轨中间，在小车侧面对着导轨贴一小段胶带作记号；手离开小车，按回车。")
+    ask("   按回车继续")
     c0 = drv.read_position()
-    out(f"   encoder = {c0}")
-    out(f"2) Moving with +{rpm} rpm (正转) for {t_move:.1f} s ...")
+    out(f"   编码器 = {c0}")
+    out(f"2) 以 +{rpm:g} rpm（正转）运行 {t_move:.1f} s ……")
     drv.set_speed(rpm, 0)
     time.sleep(t_move)
     drv.set_speed(0.0, 0)
     time.sleep(0.3)
     c1 = drv.read_position()
     turns = (c1 - c0) / 51200.0
-    out(f"   encoder = {c1}  ({turns:+.4f} motor turns)")
-    ans = ask("3) Measure the distance from the tape mark to the cart's new position in millimetres: ")
-    dx = float(ans) / 1000.0
+    out(f"   编码器 = {c1}（电机转了 {turns:+.4f} 圈）")
     if abs(turns) < 1e-3:
-        raise RuntimeError("encoder did not change: is the motor enabled and in speed mode?")
+        raise RuntimeError("编码器没有变化：电机是否已使能、是否为通信速度模式？")
+    ans = ask("3) 用钢尺量出小车从胶带记号移动的距离，输入毫米数（例如 30.5）：")
+    dx = float(ans.replace("mm", "").strip()) / 1000.0
     mpr = dx / abs(turns)
     enc_sign = 1 if turns > 0 else -1
-    out(f"   belt travel per motor turn = {mpr * 1000:.2f} mm/rev (GT2 20T would be 40.0 mm)")
-    out(f"   encoder direction for +rpm: {'+' if enc_sign > 0 else '-'}  -> +x = direction the cart just moved; MARK IT")
-    out("4) Move the cart back to the tape mark (e.g. jog in the 驱动器 tab), then press Enter to store the centre.")
-    ask()
+    out(f"   每圈行程 = {mpr * 1000:.2f} mm/圈（GT2 20 齿理论值 40.0 mm）")
+    out(f"   正转时编码器方向：{'+' if enc_sign > 0 else '-'}；+x 定义为小车刚才移动的方向，请在导轨上标记")
+    out("4) 记录中点：闭环默认以“开始时小车所在位置”为中心（hardware.cart.center_mode = start），")
+    out("   所以这里不必把小车移回去，直接按回车即可（记下的当前位置只在 center_mode = fixed 时使用）。")
+    ask("   按回车继续")
     cc = drv.read_position()
     return {"meters_per_rev": round(mpr, 6), "center_counts": cc, "sign": enc_sign}

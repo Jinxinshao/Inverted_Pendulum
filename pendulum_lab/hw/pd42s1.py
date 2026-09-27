@@ -30,7 +30,8 @@ Numbers: all multi-byte integers big-endian; float32 big-endian IEEE-754
 (e.g. speed 50.0 rpm = 42 48 00 00). Position: 51200 counts per motor turn.
 
 Operating rules from the manual and from use of the official software:
-  * enable before use (FA 00 = ENABLE, FA 01 = DISABLE - note the inverted sense);
+  * enable before use (FA 00 = ENABLE, FA 01 = DISABLE); the enable state reads back
+    as 0 = enabled both in 0x31 byte 37 and in 0x2F (rig log 2026-09-27);
   * FC "immediate stop (brake)" latches; FB "clear state (stall, brake, disable)"
     must be sent, then enable again, before the motor moves again;
   * for this software the working mode must be 0x01 "communication speed mode"
@@ -453,7 +454,18 @@ class PD42S1:
         return bool(self.read(0x2D)[0])
 
     def read_enabled(self) -> bool:
-        return bool(self.read(0x2F)[0])     # 0x2F: 1 = enabled
+        """Enable state from the system block 0x31 (byte 37: 0 = enabled).
+
+        That byte is verified against the official software's display (电机使能 <-> 00).
+        0x2F is NOT used: on the rig (2026-09-27 self-test log) it answered 00 while the
+        motor was enabled, i.e. the opposite of the "1 = enabled" this client assumed -
+        which made every readiness check report "电机未使能".
+        """
+        return self.read_system()["enabled"]
+
+    def read_enable_register(self) -> int:
+        """Raw 0x2F byte (0 = enabled on the rig, same sense as FA / 0x31)."""
+        return self.read(0x2F)[0]
 
     def read_bus_voltage(self) -> float:
         return f32(self.read(0x24))
@@ -489,9 +501,21 @@ class PD42S1:
             problems.append(f"总线电压 {sysp['bus_voltage_V']:.2f} V < 11 V（12 V 电源开关是否打开？）")
         if sysp["stalled"]:
             problems.append("堵转标志置位：先“清除电机状态”再“使能”")
-        try:
-            if not self.read_enabled():
-                problems.append("电机未使能")
-        except DriverError as e:
-            problems.append(f"读使能状态失败: {e}")
+        if not sysp["enabled"]:
+            problems.append("电机未使能")
         return not problems, problems, info
+
+    def prepare_for_motion(self) -> list[str]:
+        """Official sequence before motion: clear state (stall / brake / disabled) ->
+        enable -> zero speed. Returns the actions taken. Does NOT change the work mode."""
+        done = []
+        sysp = self.read_system()
+        if sysp["stalled"] or not sysp["enabled"]:
+            self.clear_state()
+            done.append("清除电机状态")
+        if not sysp["enabled"] or done:
+            self.enable()
+            done.append("使能")
+        self.set_speed(0.0, 0)
+        done.append("零速")
+        return done

@@ -484,8 +484,8 @@ class App(tk.Tk):
                   command=self._hw_stop).pack(fill="x", pady=4)
         ttk.Label(left, textvariable=self.hw_state, wraplength=220, foreground="#1565c0").pack(anchor="w", pady=6)
         ttk.Label(left, wraplength=220, text=(
-            "安全要求：闭环前必须完成 docs/05 的全部标定与检查；12 V 电源开关（急停）放在手边；"
-            "停止按钮与空格键都会触发受控减速停车；若软件无响应，立即断开 12 V。")).pack(anchor="w")
+            "安全要求：闭环前必须完成 docs/05 的全部标定与检查；电源开关（急停）放在手边；"
+            "停止按钮与空格键都会触发受控减速停车；若软件无响应，立即断开电源。")).pack(anchor="w")
         self.bind("<space>", lambda e: self._hw_stop())
 
         right = ttk.Frame(self.tab_hw)
@@ -520,7 +520,11 @@ class App(tk.Tk):
                 CartUnits.from_config(cfg["hardware"])  # raises if the belt is not calibrated
                 # the driver readiness (speed mode, enabled, voltage, stall) is checked by the
                 # control process before arming; the 驱动器 tab's 一键准备 fixes most problems
-                if not messagebox.askyesno("闭环确认", "小车将会运动。\n12 V 开关在手边？导轨上无障碍？扶好摆杆？"):
+                xs = cfg["safety"]["x_soft"] * 100
+                if not messagebox.askyesno("闭环确认", "小车将会运动。\n"
+                                           f"小车已放在导轨正中间？（以此为中心，软限位左右各 {xs:.0f} cm）\n"
+                                           "电源开关在手边？导轨上无障碍？扶好摆杆？\n"
+                                           "（程序会自动：清除电机状态 → 使能 → 零速）"):
                     return
         except Exception as e:  # noqa: BLE001
             messagebox.showerror("无法开始", str(e))

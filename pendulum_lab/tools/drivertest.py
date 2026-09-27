@@ -79,7 +79,7 @@ class DriverSelfTest:
         self._out(msg)
         self.lines.append(msg)
 
-    def ask(self, prompt: str) -> str:
+    def ask(self, prompt: str = "") -> str:
         a = self._ask(prompt)
         self.lines.append(prompt + " > " + a)
         if a.strip().lower() in ("q", "quit", "exit"):
@@ -141,6 +141,14 @@ class DriverSelfTest:
             time.sleep(dt)
         return m
 
+    def ready(self) -> None:
+        """Before any motion step: clear state -> enable -> zero speed (steps may be run alone)."""
+        mode = self.drv.read_drive()["work_mode"]
+        if mode != 1:
+            raise Abort(f"工作模式为 {mode}，不是通信速度模式(1)：请先运行第 1 步（--steps 0,1）")
+        done = self.drv.prepare_for_motion()
+        self.say("   驱动器：" + " → ".join(done))
+
     def state(self) -> dict:
         s = self.drv.read_system()
         try:
@@ -167,14 +175,14 @@ class DriverSelfTest:
         plausible = 8.0 < sysp["bus_voltage_V"] < 60.0 and abs(sysp["pos_error"]) < COUNTS_PER_REV
         same = self.yes("   这几项（电压、实时位置、使能、工作模式）和官方上位机显示的一致吗？", default=plausible)
         en_31 = sysp["enabled"]
-        en_2f = d.read_enabled()
+        en_2f = d.read_enable_register() == 0   # rig: 0x2F = 0 when enabled (log 2026-09-27)
         self.results["Q2"] = {
             "read_pad": "末尾补 0x00（官方日志 0x31：39 字节数据 + 1 个 00）",
             "decode_plausible": plausible, "user_confirms_values": same,
             "one_byte_read_consistent": en_31 == en_2f,
             "write_06": "单寄存器写：数值在低字节（官方日志 01 06 00 FA 00 01 = 失能）",
         }
-        self.say(f"   单字节读取（0x2F 使能标志）与系统参数块（0x31 第 37 字节）一致：{'是' if en_31 == en_2f else '否'}")
+        self.say(f"   单字节读取（0x2F 使能标志，0=使能）与系统参数块（0x31 第 37 字节）一致：{'是' if en_31 == en_2f else '否'}")
 
     def step1_mode(self) -> None:
         d = self.drv
@@ -208,6 +216,7 @@ class DriverSelfTest:
         self.say(f"   小车将以 {self.rpm_move:g} rpm 移动 0.8 s（约 {self.rpm_move / 60 * 0.8 * self.mm_per_rev:.0f} mm），"
                  "然后发 0 rpm 并观察 1.2 s；再反向走回来。")
         self.ask("   准备好后按回车开始（输入 q 退出）")
+        self.ready()
         res = {}
         for sgn, name in ((1, "正转(+)"), (-1, "反转(-)")):
             p0 = self.drv.read_position()
@@ -265,6 +274,7 @@ class DriverSelfTest:
         if self.plus_side == "?":
             side = self.ask("   “正转(+)”时小车往哪边走？输入 L 或 R").upper()
             self.plus_side = {"L": "左", "R": "右"}.get(side[:1], "?")
+        self.ready()
         cases = []
         for sgn in (1, -1):
             for sw in ("ahead", "behind"):
@@ -288,6 +298,7 @@ class DriverSelfTest:
         self.say("\n== 第 4 步（可选）：皮带标定——电机转一圈小车走多远 ==")
         if not self.yes("   现在做吗？需要一把钢尺和一小段胶带。"):
             return
+        self.ready()
         res = cart_calibrate_interactive(self.drv, self.rpm_move, 1.5, out=self.say, ask=self.ask)
         self.results["belt"] = res
         self.mm_per_rev = res["meters_per_rev"] * 1000
@@ -315,6 +326,8 @@ class DriverSelfTest:
             self.say(f"\n中止：{e or 'Ctrl+C'}")
         except DriverError as e:
             self.say(f"\n通信错误：{e}")
+        except Exception as e:  # noqa: BLE001 - e.g. a mistyped distance: stop safely, keep the log
+            self.say(f"\n出错：{type(e).__name__}: {e}")
         finally:
             disable = True
             if ok:

@@ -50,7 +50,7 @@ DEFAULTS: dict = {
     "actuator": {"a_max": 6.0, "v_max": 0.5, "v_quantum": 0.0},
     "safety": {
         "theta_trip_deg": 25.0,
-        "x_soft": 0.20,
+        "x_soft": 0.25,              # m, soft limit +-25 cm around the rail centre (70 cm rail)
         "a_brake": 3.0,
         "latency": 0.03,
         "v_max": 0.5,
@@ -102,7 +102,8 @@ DEFAULTS: dict = {
         "calibration": {"adc_upright": None, "counts_per_rad": None, "sign": None},
         "cart": {
             "meters_per_rev": None,          # belt travel per motor turn (calibrate-cart)
-            "center_counts": None,           # encoder at rail centre
+            "center_counts": None,           # encoder at rail centre (used when center_mode = "fixed")
+            "center_mode": "start",          # "start": the cart position when control starts IS the centre
             "sign": 1,                       # encoder direction for 正转
         },
         "motor_feedback_every": 2,           # read position every N control periods
