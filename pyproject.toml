@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pendulum-teaching-lab"
+version = "0.2.0"
+description = "Inverted pendulum computer-control teaching platform: digital twin, PD/PID/LQR/pole placement/swing-up, PD42S1 real-time rig control"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.21", "scipy>=1.8", "matplotlib>=3.5", "pyserial>=3.5"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+pendulum-lab = "pendulum_lab.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pendulum_lab*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

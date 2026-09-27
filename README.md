@@ -1,2 +1,117 @@
-# Inverted_Pendulum
-Inverted_Pendulum for Class
+# 倒立摆计算机控制教学平台（Inverted_Pendulum）
+
+一套面向课堂的**计算机控制系统**教学软件，对象是学生自制的“步进电机 + 同步带 + 小车 + 电位器 + 钢管摆杆”一级倒立摆。平台由以下部分组成：
+
+1. **数字孪生仿真**：非线性模型，含采样、延迟、量化噪声、驱动器滞后、皮带间隙、导轨端点等非理想因素。可以实时或慢动作演示 PD、串级 PID、LQR、极点配置和能量起摆。
+2. **闭环分析**：给出增益、z 平面闭环极点和延迟裕度。线性理论和仿真结果并列展示。
+3. **参数辨识**：自由摆动录制与离线辨识。电位器死区毛刺剔除、传感器自标定、两种独立方法对比、阻尼模型按 AIC 选择，结果一键更新模型并重新设计全部控制器。平衡时还可做在线 RLS 辨识与自整定（带已知激励和安全判据）。
+4. **驱动器页**：原厂上位机所需功能的自主实现，包括使能/失能、刹车/清除状态、速度模式、点动、系统参数、限位、皮带标定向导和指令日志。
+5. **实物实时控制**：PC 以 200 Hz 读取电位器角度，经 PD42S1 **通信速度模式**驱动小车。支持影子模式（只读、电机不动）、闭环模式，以及不需要硬件的软件在环（SIL）演示。
+
+> **当前状态：请务必先读这一段**
+> - 仿真、分析、参数辨识、GUI、全部硬件代码路径均已完成，自动测试全部通过。
+> - PD42S1 驱动按《自定义串口协议 V1.2》《modbus-rtu 协议 V1.2》实现，**两种协议都支持**。原厂上位机两张日志截图中的全部帧都已逐字节核对，并能逐项解释（见 [docs/07](docs/07_PD42S1通信协议适配.md)）。
+> - 使用顺序遵循手册与您的实测：使能后才能动；刹车会锁存，要“清除电机状态 + 使能”才能恢复。GUI“驱动器”页与命令 `driver prepare` 会自动完成。
+> - **2026-09-27 第一次实测摆动数据已分析**：$\omega_0=5.5147\pm0.0008$ rad/s，两侧、两种方法一致，已设为默认值（[docs/02 2.10 节](docs/02_物理建模与参数辨识.md)）。旧辨识方法被电位器死区毛刺带偏的问题已修正。
+> - 您的截图回答了 Modbus 补齐字节的问题：读回复补在**末尾**。旧代码在 Modbus 下会让系统参数错位，**已修正**，并用截图中的原始帧做了回归测试。
+> - `drivertest` 实测（2026-09-27，[docs/09 9.8 节](docs/09_驱动器分步测试指导.md)）结果：
+>   - 驱动器已切换并保存为通信速度模式；
+>   - **0 rpm 能在一个轮询周期内停住**；
+>   - **限位开关在速度模式下不会让电机停**，保护依靠软件软限位（以开始位置为中心 ±25 cm）、堵转保护和电源开关；
+>   - 0x2F 使能标志实测为 0 = 使能，旧代码读反，导致闭环报“电机未使能”。**已修正**，开始闭环时还会自动执行“清除状态 → 使能 → 零速”。
+> - 本软件**尚未在您的实物上做闭环运动验证**。闭环前请按 [docs/05](docs/05_实物调试流程.md) 逐步完成标定和安全检查。
+> - 出于安全考虑，实物只做“扶起后保持平衡”；能量起摆仅在仿真中提供。
+
+## 1 分钟上手（Windows，Conda 或普通 Python ≥ 3.9，推荐 3.11+）
+
+在工程根目录打开终端（Anaconda Prompt 或 PowerShell）：
+
+```bat
+python -m pip install -e .
+python -m pendulum_lab gui
+```
+
+- 可执行命令叫 `pendulum-lab`（连字符），Python 模块叫 `pendulum_lab`（下划线）。`python -m pendulum_lab ...` 和 `pendulum-lab ...` 两种写法等价。
+- GUI 完全离线、不碰串口，可直接课堂演示。
+
+常用命令：
+
+```bat
+python -m pendulum_lab params                       :: 由测量数据推出的物理参数
+python -m pendulum_lab design --png poles.png       :: 各算法增益、闭环极点、延迟裕度
+python -m pendulum_lab compare --kick 5:0.5 --png cmp.png   :: 同一场景对比 PD/PID/LQR/极点配置
+python -m pendulum_lab simulate --algo swingup --duration 15 --png swing.png
+python -m pendulum_lab sil --algo lqr               :: 用"模拟实物"跑一遍实时硬件代码路径
+python scripts\record_potentiometer.py --port COM12 :: 独立录制程序：90° 松手录 60 s（只需 pyserial）
+python -m pendulum_lab identify --csv swing_xxx.csv :: 自由摆动辨识（传感器自标定 + 方法 A/B + 阻尼模型选择）
+python -m pendulum_lab drivertest --sim             :: 驱动器分步测试演练（不接硬件）
+python -m pendulum_lab drivertest --motor COM11 --protocol modbus   :: 实物：0 rpm 停止 / 限位开关 / 皮带标定
+python -m pendulum_lab diagnose --sensor COM12      :: 只读：角度传感器速率/噪声/格式
+python -m pendulum_lab diagnose --motor COM11 --protocol modbus   :: 只读：驱动器版本、参数、就绪检查
+python -m pendulum_lab driver prepare --motor COM11 --protocol modbus   :: 速度模式+清除状态+使能
+python examples\benchmark.py                        :: 算法与辨识方法的系统比较 -> docs/benchmark_results.md
+python -m pytest -q                                 :: 自动测试
+```
+
+## 由您的测量得到的关键物理结论
+
+| 量 | 数值 | 来源 |
+|---|---|---|
+| 摆杆总质量 $m$ | 105.4 g（钢管 86.3 g + 铝配重 19.1 g） | 几何（Ø8×1 mm 钢管 50 cm，支点距下端 12 cm） |
+| 质心到支点 $l_c$ | 17.3 cm | 几何 |
+| 对支点转动惯量 $J$ | $5.80\times10^{-3}\,\mathrm{kg\,m^2}$ | 几何 |
+| 小角度周期 $T_0$ | **实测 1.1394 s**（几何 1.1330 s） | 2026-09-27 录制，97 个整周期，91°→21° |
+| $\omega_0$ | **5.5147 ± 0.0008 rad/s** | 两侧 5.5150 / 5.5149；方法 B 5.5094；几何 5.55（差 0.6 %） |
+| 阻尼 | 粘性 $c=0.036$ 1/s + 空气阻力 $d=0.0030$ 1/rad | 7 种模型按 AIC 选择 |
+| 开环不稳定极点 | $p\approx+5.50\ \mathrm{s^{-1}}$（倍增时间 126 ms） | |
+| 等效摆长 $L_{eq}=g/\omega_0^2$ | 32.3 cm | 运动学驱动下唯一重要的参数 |
+| 电位器斜率 | 678.1 ± 0.8 LSB/rad（0.0845°/LSB） | 周期—振幅关系；手册 680.1 |
+| 电位器死区 | **下垂位置就在死区里**，有效宽 14.2° | 最低点外推读数 4098.3；下垂静止读数 4091 被端点截断 |
+| 直立读数 | 1966（铅垂线）/ 1967.9（摆动外推） | 相差 0.16° |
+
+一个比数值本身更重要的结论：步进电机刚性驱动小车时，控制输入是小车**加速度**。摆杆动力学完全由 $\omega_0$ 决定（再加上很小的阻尼项），用秒表就能测准，学生可以亲手完成“建模—辨识—验证”的闭环。详见 [docs/02](docs/02_物理建模与参数辨识.md)。
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [01 系统总体设计](docs/01_系统总体设计.md) | 架构、控制层次、线程/进程、时序预算、运行模式 |
+| [02 物理建模与参数辨识](docs/02_物理建模与参数辨识.md) | 拉格朗日推导、运动学驱动模型、几何参数、摆动试验辨识、传感器模型 |
+| [03 控制算法原理](docs/03_控制算法原理.md) | PD、串级 PID、LQR、极点配置、卡尔曼滤波与零偏估计、能量起摆、离散化与延迟 |
+| [04 软件使用手册](docs/04_软件使用手册.md) | 安装、全部命令、GUI、配置文件字段、日志格式 |
+| [05 实物调试流程](docs/05_实物调试流程.md) | 从只读诊断到首次闭环的逐步清单与通过标准 |
+| [06 教学实验指导书](docs/06_教学实验指导书.md) | 10 个课堂实验（仿真 + 实物），含思考题 |
+| [07 PD42S1 通信协议适配](docs/07_PD42S1通信协议适配.md) | 帧格式、从手册填写指令表、对照原厂日志验证 |
+| [08 常见问题与故障排查](docs/08_常见问题与故障排查.md) | 命令拼写、串口、4.47 V、漂移、振荡、极限环等 |
+| [09 驱动器分步测试指导](docs/09_驱动器分步测试指导.md) | `drivertest`：Modbus 补齐（已由截图回答）、0 rpm 停止、限位开关、皮带标定，逐步操作说明 |
+| [基准结果](docs/benchmark_results.md) | 5 种控制器 × 10 种非理想场景；7 种辨识方法对比（自动生成） |
+
+## 工程结构
+
+```
+pendulum_lab/
+  model/      params.py 物理参数 | dynamics.py 非线性/线性模型 | identification.py 摆动辨识基础
+              swing_analysis.py 实测摆动：毛刺剔除、传感器自标定、转折点、阻尼模型选择
+  control/    discrete.py 离散化+延迟+DLQR+Ackermann+Kalman | controllers.py PD/PID/LQR/极点配置/起摆
+              estimators.py 微分/卡尔曼(零偏)/起摆估计 | analysis.py 闭环极点、延迟裕度
+              actuator.py 加速度→速度指令 | safety.py 安全监督（仿真与实物共用）
+  sim/        simulator.py 数字孪生
+  control/online_id.py  状态变量滤波、最小二乘辨识、在线 RLS、自整定
+  hw/         pd42s1.py 两种协议编解码+全部命令 | sensor.py 角度串口 | motor.py 电机线程+单位换算
+              runtime.py 实时循环 | process.py GUI 独立控制进程 | timing.py 高精度定时 | fake.py 按手册仿真的驱动器(SIL)
+  tools/      hwtools.py 诊断/标定/阶跃测试 | drivertest.py 驱动器分步测试 | plotting.py 作图
+  gui/        app.py 主界面 | driver_tab.py 驱动器页 | ident_tab.py 参数辨识页
+  cli.py      命令行
+config/       physical_config.example.json 实物配置模板（标定后生成 physical_config.json）
+scripts/      record_potentiometer.py 独立的电位器录制程序
+docs/         说明文档与图
+examples/     make_teaching_figures.py 文档配图 | benchmark.py 系统比较
+tests/        自动测试（原厂日志帧逐字节核对、两种协议的 SIL 实时测试、辨识全链路测试、实测摆动数据回归）
+tests/data/   swing_20260927_151631.csv 第一次实测摆动数据
+```
+
+## 安全
+
+- 电源开关（目前为 24 V 电源）就是急停，必须放在操作者手边。建议串接蘑菇头急停。
+- **通信中断时驱动器会保持最后的速度指令**（速度模式的固有特性）。PC 死机、USB 被拔都可能让小车冲向端点。驱动器支持左右限位开关（0x99），请先用 `drivertest` 第 3 步验证其在速度模式下有效，再启用；电源开关始终是最终急停。见 docs/05 第 0 步、docs/07 第 7.5 节、docs/09。
+- 软件停车方式是速度指令斜坡减到 0。`FC` 刹车会锁存，只作最后手段。

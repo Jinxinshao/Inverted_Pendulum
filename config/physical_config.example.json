@@ -1,0 +1,32 @@
+{
+  "_readme": [
+    "Copy to config/physical_config.json (or let the GUI create it) and fill in step by step (docs/05). null = not measured yet.",
+    "Every command accepts --config config/physical_config.json; values here override the built-in defaults.",
+    "The GUI loads config/physical_config.json automatically when it exists."
+  ],
+  "loop": {
+    "Ts": 0.005,
+    "latency_estimate": 0.020,
+    "actuator_tau": 0.015
+  },
+  "hardware": {
+    "sensor_port": "COM12",
+    "sensor_baud": 115200,
+    "motor_port": "COM11",
+    "motor_baud": 115200,
+    "motor_address": 1,
+    "motor_protocol": "custom",
+    "motor_accel": 0,
+    "calibration": {"adc_upright": null, "counts_per_rad": null, "sign": null},
+    "cart": {"meters_per_rev": null, "center_counts": null, "sign": 1},
+    "motor_feedback_every": 2,
+    "log_dir": "data"
+  },
+  "safety": {
+    "theta_trip_deg": 20.0,
+    "x_soft": 0.15,
+    "a_brake": 3.0,
+    "max_runtime": 30.0
+  },
+  "actuator": {"a_max": 4.0, "v_max": 0.4}
+}
