@@ -81,6 +81,19 @@ def calibration_from(hw: dict) -> AngleCalibration:
     return AngleCalibration(float(c["adc_upright"]), float(c["counts_per_rad"]), int(c["sign"]))
 
 
+def _retry(fn, attempts: int = 3, pause: float = 0.02):
+    """Call ``fn`` again after a DriverError (non-real-time phases only)."""
+    from .pd42s1 import DriverError
+
+    for k in range(attempts):
+        try:
+            return fn()
+        except DriverError:
+            if k == attempts - 1:
+                raise
+            time.sleep(pause)
+
+
 class HardwareLoop:
     def __init__(self, cfg: dict, sensor: SensorReader, motor: MotorWorker | None, opts: RunOptions,
                  calib: AngleCalibration, live: LiveState | None = None, printer=print):
@@ -132,10 +145,16 @@ class HardwareLoop:
         if self.opts.mode == "closed":
             drv = self.motor.drv
             # the manual's usage rule: clear state -> enable -> zero speed before any motion
-            # (a disabled motor, e.g. after drivertest or after a brake, used to fail here)
-            done = drv.prepare_for_motion()
+            # (a disabled motor, e.g. after drivertest or after a brake, used to fail here).
+            # Preflight is not time-critical: a transient reply timeout is retried instead of
+            # aborting the start (seen once in ~10 SIL runs: a 50 ms stall cut a reply short).
+            done = _retry(drv.prepare_for_motion)
             self.print("driver: " + " -> ".join(done))
-            ok, problems, dinfo = drv.readiness()
+            for _ in range(3):  # readiness() reports a comm error as a problem instead of raising
+                ok, problems, dinfo = drv.readiness()
+                if ok or not any(p.startswith("driver not answering") for p in problems):
+                    break
+                time.sleep(0.02)
             info["driver"] = dinfo
             if not ok:
                 raise RuntimeError("PD42S1 not ready: " + "; ".join(problems))
@@ -143,18 +162,27 @@ class HardwareLoop:
             if cart.get("center_mode", "start") == "start" or cart.get("center_counts") is None:
                 # the rail centre is where the operator put the cart before pressing start;
                 # the soft limits are +-x_soft around it
-                c = drv.read_position()
+                c = _retry(drv.read_position)
                 self.motor.units.center_counts = float(c)
                 info["center_counts"] = c
                 self.print(f"rail centre = start position (encoder {c}); soft limits +-{self.sup.lim.x_soft * 100:.0f} cm")
             # cart must start well inside the soft limits
-            self.motor.read_position_now()
+            self.motor.position = None
+            for _ in range(3):
+                self.motor.read_position_now()
+                if self.motor.position is not None:
+                    break
             if self.motor.position is None:
                 raise RuntimeError(f"cannot read motor position: {self.motor.last_error}")
             x0 = self.motor.position[1]
             if abs(x0) > 0.5 * self.sup.lim.x_soft:
                 raise RuntimeError(f"cart at {x0 * 100:+.1f} cm: move it to the rail centre first")
             info["x0"] = x0
+            # retried preflight reads are reported here, not as control-phase comm errors
+            info["preflight_comm_retries"] = self.motor.total_errors
+            if self.motor.total_errors:
+                self.print(f"preflight: {self.motor.total_errors} transient read error(s), retried")
+            self.motor.total_errors = self.motor.consecutive_errors = 0
         return info
 
     def request_stop(self) -> None:
