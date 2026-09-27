@@ -17,16 +17,16 @@ Cell: RMS angle in the last 2 s / max |cart travel| / RMS cart acceleration [m/s
 
 | scenario | PD (angle only) | cascade PID | LQR (delay+lag aware) | LQR (naive: no delay/lag) | pole placement |
 |---|---|---|---|---|---|
-| nominal | FAIL (rail) | 0.03° / 12 cm / 0.52 | 0.03° / 12 cm / 0.49 | 0.05° / 8 cm / 0.74 | 0.03° / 11 cm / 0.58 |
-| latency 35 ms | FAIL (rail) | 0.04° / 13 cm / 0.69 | 0.03° / 13 cm / 0.56 | 0.07° / 10 cm / 1.39 | 0.04° / 12 cm / 0.70 |
-| Ts 10 ms | FAIL (rail) | 0.05° / 12 cm / 0.51 | 0.03° / 12 cm / 0.52 | 0.06° / 9 cm / 0.74 | 0.03° / 11 cm / 0.58 |
-| zero error 1 deg | FAIL (rail) | 0.03° / 13 cm / 0.50 | 0.03° / 12 cm / 0.48 | 0.04° / 8 cm / 0.71 | 0.04° / 11 cm / 0.56 |
+| nominal | FAIL (rail) | 0.03° / 12 cm / 0.52 | 0.03° / 12 cm / 0.50 | 0.04° / 8 cm / 0.76 | 0.03° / 11 cm / 0.58 |
+| latency 35 ms | FAIL (rail) | 0.03° / 13 cm / 0.68 | 0.03° / 13 cm / 0.56 | 0.10° / 10 cm / 1.32 | 0.04° / 13 cm / 0.70 |
+| Ts 10 ms | FAIL (rail) | 0.04° / 12 cm / 0.51 | 0.03° / 12 cm / 0.53 | 0.05° / 9 cm / 0.76 | 0.04° / 11 cm / 0.59 |
+| zero error 1 deg | FAIL (rail) | 0.03° / 13 cm / 0.50 | 0.03° / 12 cm / 0.48 | 0.04° / 9 cm / 0.71 | 0.03° / 11 cm / 0.56 |
 | zero error, no bias state | FAIL (rail) | FAIL (rail) | FAIL (rail) | FAIL (rail) | FAIL (rail) |
-| backlash 2 mm | FAIL (rail) | 0.40° / 13 cm / 0.68 | 0.30° / 12 cm / 0.65 | 0.67° / 10 cm / 2.25 | 0.35° / 11 cm / 0.69 |
-| model -10 % | FAIL (rail) | 0.03° / 17 cm / 0.85 | 0.03° / 16 cm / 0.65 | 0.04° / 11 cm / 0.90 | 0.07° / 16 cm / 0.99 |
-| model +10 % | FAIL (rail) | 0.03° / 9 cm / 0.44 | 0.03° / 10 cm / 0.46 | 0.06° / 8 cm / 1.33 | 0.03° / 8 cm / 0.49 |
-| noise x3 | FAIL (rail) | 0.07° / 11 cm / 0.59 | 0.06° / 11 cm / 0.73 | 0.11° / 8 cm / 1.03 | 0.08° / 11 cm / 0.77 |
-| Coulomb 0.2 | FAIL (rail) | 0.55° / 14 cm / 0.52 | 0.63° / 14 cm / 0.53 | 0.39° / 11 cm / 0.74 | 0.73° / 10 cm / 0.62 |
+| backlash 2 mm | FAIL (rail) | 0.40° / 13 cm / 0.68 | 0.29° / 12 cm / 0.63 | 0.66° / 11 cm / 2.20 | 0.34° / 11 cm / 0.71 |
+| model -10 % | FAIL (rail) | 0.02° / 17 cm / 0.85 | 0.03° / 17 cm / 0.65 | 0.03° / 12 cm / 0.90 | 0.07° / 16 cm / 1.00 |
+| model +10 % | FAIL (rail) | 0.03° / 10 cm / 0.44 | 0.03° / 10 cm / 0.46 | 0.07° / 8 cm / 1.31 | 0.03° / 8 cm / 0.50 |
+| noise x3 | FAIL (rail) | 0.07° / 12 cm / 0.59 | 0.08° / 12 cm / 0.72 | 0.11° / 8 cm / 1.00 | 0.08° / 11 cm / 0.77 |
+| Coulomb 0.2 | FAIL (rail) | 0.57° / 14 cm / 0.52 | 0.65° / 14 cm / 0.53 | 0.43° / 11 cm / 0.75 | 0.74° / 10 cm / 0.63 |
 
 ### Linear delay margin
 
@@ -40,17 +40,35 @@ Cell: RMS angle in the last 2 s / max |cart travel| / RMS cart acceleration [m/s
 
 ## Identification methods
 
-| method | omega0 [rad/s] | c [1/s] | gamma [rad/s^2] | notes |
-|---|---|---|---|---|
-| **truth** | 5.5500 | 0.0200 | 0.1000 | synthetic rig: 88 deg release, 12-bit ADC, 0.6 LSB noise, dead zone |
-| stopwatch, naive T = t/20 | 5.0315 | - | - | ignores the amplitude dependence of the period |
-| stopwatch + elliptic correction (viscous) | 5.5378 | 0.0410 | 0 | two numbers cannot separate c and gamma |
-| stopwatch + elliptic correction (Coulomb) | 5.5616 | 0 | 0.1975 | |
-| A2 extrema, both sides | 5.5449 | 0.0271 | 0.0761 | biased: far side reads through the track wrap |
-| **A1 extrema, one side, full cycles** | 5.5524 | 0.0202 | 0.0991 | recommended |
-| B SVF + least squares on the ODE | 5.5465 | 0.0136 | 0.1232 | uses every sample; damping noisier |
-| online RLS, closed loop, known excitation | 5.6182 | (fixed) | - | ±0.051 (1σ); rejected 0.3 %; trusted |
-| online RLS, closed loop, no excitation | 5.9774 | (fixed) | - | ±0.141 (1σ); rejected 0.3 %; NOT trusted |
-| online RLS, closed loop, hand taps | 4.5343 | (fixed) | - | ±0.019 (1σ); rejected 5.5 %; NOT trusted |
+### Digital twin of the recording (truth known)
 
-_runtime 14 s_
+| method | omega0 [rad/s] | c [1/s] | gamma [rad/s^2] | d [1/rad] | notes |
+|---|---|---|---|---|---|
+| **truth** | 5.5500 | 0.0200 | 0.1000 | 0 | 88 deg release, 200 Hz, 12-bit, dead zone at the bottom with glitches |
+| stopwatch, naive T = t/20 | 5.0315 | - | - | - | ignores the amplitude dependence of the period |
+| stopwatch + elliptic correction (viscous) | 5.5378 | 0.0410 | 0.0000 | 0.00000 | two numbers cannot separate c and gamma |
+| stopwatch + elliptic correction (Coulomb) | 5.5616 | 0.0000 | 0.1975 | 0.00000 |  |
+| old A1: raw extrema, one side | 16.6567 | 0.0000 | 0.0000 | 0.00000 | glitches while crossing the dead zone become false extrema |
+| old A2: raw extrema, both sides | 12.0293 | 0.0000 | 0.0000 | 0.00000 | glitches while crossing the dead zone become false extrema |
+| **A: turning points + energy balance** | 5.5500 | 0.0198 | 0.1008 | 0.00000 | recommended; damping model by AIC: 粘性+库仑; sensor K 678.4 (truth 678.1) |
+| B: SVF (FOH, corrected) + least squares | 5.5452 | -0.0159 | 0.1278 | 0.00316 | omega0 good; damping terms collinear (dead zone removes the fastest part) |
+
+### Real recording 2026-09-27 (tests/data/swing_20260927_151631.csv)
+
+| method | omega0 [rad/s] | c [1/s] | gamma [rad/s^2] | d [1/rad] | notes |
+|---|---|---|---|---|---|
+| old A1: raw extrema, one side | 11.7970 | 0.0000 | 4.8956 | 0.00000 | glitches while crossing the dead zone become false extrema |
+| old A2: raw extrema, both sides | 10.7538 | 0.0000 | 0.0000 | 0.00000 | glitches while crossing the dead zone become false extrema |
+| **A: turning points + energy balance** | 5.5147 | 0.0363 | 0.0000 | 0.00297 | 粘性+空气阻力; + side 5.5150, - side 5.5149; K 678.1 |
+| B: SVF (FOH, corrected) + least squares | 5.5094 | 0.1194 | -0.0742 | -0.01804 | omega0 -0.10 % vs A |
+| stopwatch 90->50 deg, 20 cycles, 24.85 s (viscous) | 5.5518 | 0.0435 | 0.0000 | 0.00000 | the timing was right (recording: 24.82 s); the eye-read end amplitude was 45.8 deg, not 50 |
+
+### Closed-loop online identification (twin, true omega0 = 5.55)
+
+| method | omega0 [rad/s] | c | gamma | d | notes |
+|---|---|---|---|---|---|
+| online RLS, closed loop, known excitation | 5.6181 | (fixed) | - | - | ±0.051 (1σ); rejected 0.3 %; trusted |
+| online RLS, closed loop, no excitation | 6.0788 | (fixed) | - | - | ±0.139 (1σ); rejected 0.3 %; NOT trusted |
+| online RLS, closed loop, hand taps | 4.5198 | (fixed) | - | - | ±0.020 (1σ); rejected 5.4 %; NOT trusted |
+
+_runtime 12 s_

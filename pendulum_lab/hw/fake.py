@@ -129,7 +129,7 @@ class FakeRig(threading.Thread):
             ok, data = self._execute(code, None)
             if not ok:
                 return _with_crc(bytes([self.address, 0x84, 3]))
-            d = (b"\x00" + data) if len(data) % 2 else data
+            d = (data + b"\x00") if len(data) % 2 else data  # real driver: pad AFTER the data
             return _with_crc(bytes([self.address, 0x04, len(d)]) + d)
         payload = fr[4:6] if f == 0x06 else fr[7:-2]
         if f == 0x06 and code in (0xFA, 0x62, 0x99, 0x6F):

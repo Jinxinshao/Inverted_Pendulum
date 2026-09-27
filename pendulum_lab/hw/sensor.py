@@ -38,9 +38,12 @@ class AngleCalibration:
     """theta = sign * (adc - adc_upright) / counts_per_rad.
 
     Defaults for this rig:
-      * counts_per_rad = (4092 - 1966) / pi = 676.7 (hanging vs upright readings,
-        exactly 180 deg apart by gravity); the WDD35D4 datasheet (345 deg over
-        4095 counts) gives 680.1 - both agree within 0.5 %.
+      * counts_per_rad = 678.1 +- 0.8 from the first free-swing recording
+        (2026-09-27, period-amplitude relation, docs/02 section 2.10). The old
+        gravity value (4092 - 1966)/pi = 676.7 used the HANGING reading, which is
+        clipped on this rig: the true bottom lies 0.5 deg inside the dead zone
+        (reading 4098 by extrapolation); (4098.3 - 1966)/pi = 678.7 agrees with
+        the swing value. Datasheet (345 deg over 4095 counts): 680.1.
       * adc_upright = 1966 from the hand-balanced reading; refine with the
         calibration procedure (docs/05) and the Kalman bias estimate.
       * sign must be checked on the rig (tilt the rod toward the motor's
@@ -48,7 +51,7 @@ class AngleCalibration:
     """
 
     adc_upright: float = 1966.0
-    counts_per_rad: float = 676.7
+    counts_per_rad: float = 678.1
     sign: int = 1
 
     def theta(self, adc: float) -> float:

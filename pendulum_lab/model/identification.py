@@ -173,6 +173,7 @@ def simulate_free_swing(
     duration: float = 30.0,
     fs: float = 500.0,
     eps: float = 1e-3,
+    d: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Reference ODE solution of the hanging pendulum (phi from the bottom).
 
@@ -181,7 +182,7 @@ def simulate_free_swing(
     alpha = omega0 * omega0
 
     def f(_t, y):
-        return [y[1], -alpha * math.sin(y[0]) - c * y[1] - gamma * math.tanh(y[1] / eps)]
+        return [y[1], -alpha * math.sin(y[0]) - c * y[1] - gamma * math.tanh(y[1] / eps) - d * y[1] * abs(y[1])]
 
     t = np.arange(0.0, duration, 1.0 / fs)
     sol = solve_ivp(f, (0.0, duration), [a0, 0.0], t_eval=t, rtol=1e-10, atol=1e-12, method="LSODA")

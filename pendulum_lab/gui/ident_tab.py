@@ -13,6 +13,8 @@ import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
+from ..hw.sensor import AngleCalibration
+
 
 class IdentTab(ttk.Frame):
     def __init__(self, master, app):
@@ -65,8 +67,8 @@ class IdentTab(ttk.Frame):
 
         box = ttk.LabelFrame(left, text="③ 应用到模型（所有控制器按新模型重新设计）", padding=4)
         box.pack(fill="x", pady=4)
-        ttk.Button(box, text="采用方法 A1（推荐）", command=lambda: self.apply("one_sided")).pack(fill="x")
-        ttk.Button(box, text="采用方法 B", command=lambda: self.apply("svf_ls")).pack(fill="x")
+        ttk.Button(box, text="采用方法 A（转折点+能量平衡，推荐）", command=lambda: self.apply("A")).pack(fill="x")
+        ttk.Button(box, text="采用方法 B（只建议用其 ω0）", command=lambda: self.apply("B")).pack(fill="x")
         ttk.Label(box, wraplength=240, justify="left", text=(
             "闭环中的在线辨识（RLS + 已知激励）在“数字孪生仿真”页和“实物运行”页的“在线辨识”选项里；"
             "原理与局限见 docs/03 第 8 节。")).pack(anchor="w")
@@ -107,6 +109,11 @@ class IdentTab(ttk.Frame):
             messagebox.showinfo("标定", "请依次记录下垂、直立、+x 侧倾")
             return
         cpr = abs(c["down"] - c["up"]) / math.pi
+        if c["down"] > 4075 or c["down"] < 20:
+            # hanging reading clipped at the potentiometer end (this rig): not a 180 deg reference;
+            # use the slope from the free-swing identification (period-amplitude relation)
+            r = self.fits.get("A")
+            cpr = r.calibration.K if r is not None else AngleCalibration().counts_per_rad
         sign = 1 if c["tilt"] > c["up"] else -1
         cal = self.app.cfg["hardware"]["calibration"]
         cal.update(adc_upright=round(c["up"], 2), counts_per_rad=round(cpr, 2), sign=sign)
@@ -191,8 +198,6 @@ class IdentTab(ttk.Frame):
         import tempfile
 
         from ..cli import identify_csv
-        from ..model.identification import extrema, fit_decay_summary_both
-        from ..tools.hwtools import swing_angle_from_adc
 
         # identify_csv works on files -> write a temp copy (keeps one code path with the CLI)
         fd, tmp = tempfile.mkstemp(suffix=".csv")
@@ -204,44 +209,39 @@ class IdentTab(ttk.Frame):
         try:
             self.fits = identify_csv(tmp, self.app.cfg, out=lines.append)
         except Exception as e:  # noqa: BLE001
-            lines.append(f"辨识失败: {e}（摆幅太小？录制太短？标定符号不对？）")
+            lines.append(f"辨识失败: {e}（摆幅太小？录制太短？松手前是否先静止下垂 3 s？）")
             self.fits = {}
         finally:
             os.remove(tmp)
         p = self.app.cfg["plant"]
-        lines.append(f"当前模型: omega0={p['omega0']:.4f} rad/s, c={p['viscous_c']:.4f}, gamma={p['coulomb_gamma']:.4f}  ({p.get('source', '')})")
-        v, c = fit_decay_summary_both()
-        lines.append(f"秒表法(20 次 24.85 s): 粘性 {v.omega0:.4f} / 库仑 {c.omega0:.4f} rad/s")
+        lines.append(f"当前模型: ω0={p['omega0']:.4f} rad/s, c={p['viscous_c']:.4f}, γ={p['coulomb_gamma']:.4f}, "
+                     f"d={p.get('quad_d', 0.0):.5f}  ({p.get('source', '')})")
         self.text.delete("1.0", "end")
         self.text.insert("end", "\n".join(lines))
 
-        from ..cli import _calib_or_default
-
-        phi = swing_angle_from_adc(self.adc, _calib_or_default(self.app.cfg))
         self.ax1.clear()
-        self.ax1.plot(self.t, np.degrees(phi), lw=0.6)
-        te, ve = extrema(self.t, phi)
-        self.ax1.plot(te, np.degrees(ve), "o", ms=3)
-        self.ax1.set_ylabel("phi from bottom [deg]  (gaps = dead zone)")
-        self.ax1.grid(alpha=0.3)
         self.ax2.clear()
-        if len(te):
-            self.ax2.plot(te[ve > 0], np.degrees(ve[ve > 0]), "o", ms=3, label="+ side")
-            self.ax2.plot(te[ve < 0], -np.degrees(ve[ve < 0]), "s", ms=3, label="- side (abs)")
-        fo = self.fits.get("one_sided")
-        side = self.fits.get("side", -1)
-        sel = np.sign(ve) == side
-        if fo is not None and sel.sum() > 2:
-            from ..model.identification import simulate_free_swing
+        r = self.fits.get("A")
+        if r is not None:
+            self.ax1.plot(r.t, np.degrees(r.phi), lw=0.6, label="valid samples (dead zone / glitches removed)")
+            self.ax1.plot(r.t_ext, np.degrees(r.side * r.amp), "o", ms=3, label="turning points")
+            self.ax1.legend(fontsize=8, loc="upper right")
+            for s_, mk, lab in ((1, "o", "+ side"), (-1, "s", "- side")):
+                m = r.side == s_
+                self.ax2.plot(r.t_ext[m], np.degrees(r.amp[m]), mk, ms=3, label=lab)
+            from ..model.identification import extrema, simulate_free_swing
 
-            t_s, a_s = te[sel][1], float(np.abs(ve[sel][1]))  # skip the release extremum (hand)
-            ts, ps = simulate_free_swing(fo.omega0, fo.viscous_c, fo.coulomb_gamma, a0=a_s, duration=float(self.t[-1] - t_s), fs=200)
+            ts, ps = simulate_free_swing(r.omega0, r.viscous_c, r.coulomb_gamma, a0=float(r.amp[0]),
+                                         duration=float(r.t_ext[-1] - r.t_ext[0]) + 0.5, fs=200, d=r.quad_d)
             tm, vm = extrema(ts, ps)
-            self.ax2.plot(tm + t_s, np.degrees(np.abs(vm)), "k-", lw=0.8, label="model A1 (fitted side)")
+            self.ax2.plot(tm + r.t_ext[0], np.degrees(np.abs(vm)), "k-", lw=0.8, label=f"model A (c={r.viscous_c:.3f}, gamma={r.coulomb_gamma:.3f}, d={r.quad_d:.4f})")
+        self.ax1.set_ylabel("angle from bottom [deg]")
+        self.ax1.grid(alpha=0.3)
         self.ax2.set_xlabel("t [s]")
         self.ax2.set_ylabel("amplitude [deg]")
         self.ax2.grid(alpha=0.3)
-        self.ax2.legend(fontsize=8)
+        if r is not None:
+            self.ax2.legend(fontsize=8)
         self.canvas.draw_idle()
 
     def apply(self, key: str):
@@ -251,8 +251,9 @@ class IdentTab(ttk.Frame):
             return
         p = self.app.cfg["plant"]
         old = p["omega0"]
-        p.update(omega0=round(f.omega0, 5), viscous_c=round(f.viscous_c, 5), coulomb_gamma=round(f.coulomb_gamma, 5),
-                 source=f"free-swing identification ({key})")
+        p.update(omega0=round(f.omega0, 5), viscous_c=round(max(f.viscous_c, 0.0), 5),
+                 coulomb_gamma=round(max(f.coulomb_gamma, 0.0), 5), quad_d=round(max(f.quad_d, 0.0), 6),
+                 source=f"free-swing identification (method {key})")
         path = self.app.save_hardware_config()
         self.app.reset_sim()
-        messagebox.showinfo("应用", f"omega0 {old:.4f} -> {f.omega0:.4f} rad/s；控制器已按新模型重新设计。\n已保存到 {path}")
+        messagebox.showinfo("应用", f"ω0 {old:.4f} -> {f.omega0:.4f} rad/s；控制器已按新模型重新设计。\n已保存到 {path}")

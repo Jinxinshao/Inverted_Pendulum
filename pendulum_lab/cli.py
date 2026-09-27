@@ -49,44 +49,56 @@ def cmd_params(args) -> None:
 
 
 def identify_csv(path: str, cfg: dict, min_amp: float = 5.0, out=print) -> dict:
-    """Free-swing CSV -> both identification methods + comparison. Returns dict of fits."""
+    """Free-swing CSV -> sensor self-calibration + two independent identification methods.
+
+    A  turning points (one per valid segment) + half-cycle energy balance, with the
+       potentiometer mapping calibrated from the swing itself (recommended);
+    B  state-variable filter (FOH, corrected) + least squares on the ODE over all
+       valid samples.
+    Returns {"analysis"/"A": SwingAnalysis, "B": LSFit, "rest": (median, std, outliers)}.
+    """
     import numpy as np
 
     from .control.online_id import ls_free_swing
-    from .model.identification import extrema, fit_free_decay, fit_free_decay_one_sided
-    from .tools.hwtools import load_sensor_csv, swing_angle_from_adc
+    from .model.identification import fit_decay_summary_both
+    from .model.swing_analysis import analyse_swing, robust_rest
+    from .tools.hwtools import load_sensor_csv, split_rest_swing
 
     cal = _calib_or_default(cfg)
-    t, adc = load_sensor_csv(path)
-    rest = adc[t < 2.5]
-    if len(rest) > 10 and np.std(rest) < 3:
-        down = float(np.median(rest))
-        out(f"rest (hanging) ADC = {down:.1f} -> counts/rad from gravity reference = {abs(down - cal.adc_upright) / np.pi:.1f}")
-    phi = swing_angle_from_adc(adc, cal)
-    dead = np.isnan(phi).mean()
-    out(f"{len(t)} samples, {len(t) / (t[-1] - t[0]):.1f} Hz, dead-zone/invalid samples {dead * 100:.1f} %")
-    te, ve = extrema(t, phi, min_amp=np.radians(min_amp))
-    # which side never wraps around the resistive track? its extremum readings lie
-    # between the upright and the hanging reading (no jump through the dead zone)
-    idx = np.searchsorted(t, te).clip(0, len(adc) - 1)
-    lo, hi = sorted((cal.adc_upright, float(np.nanmedian(adc[t < 2.5])) if (t < 2.5).any() else 4092.0))
-    inside = (adc[idx] >= lo - 50) & (adc[idx] <= hi + 50)
-    side = int(np.sign(np.sum(np.sign(ve[inside])))) or 1
-    out(f"non-wrapped side: {'+' if side > 0 else '-'} ({inside.sum()} of {len(te)} extrema read without wrap)")
-    fits: dict = {"side": side}
-    fits["one_sided"] = fo = fit_free_decay_one_sided(t, phi, side, min_amp_deg=min_amp)
-    out("method A1 (same-side extrema, full cycles, energy balance)  [recommended]: " + fo.summary())
+    t, adc, phase = load_sensor_csv(path, with_phase=True)
+    rest, swing = split_rest_swing(t, phase)
+    fits: dict = {}
+    rest_adc = None
+    if rest.sum() > 20:
+        rest_adc, rest_sd, n_out = robust_rest(adc[rest])
+        fits["rest"] = (rest_adc, rest_sd, n_out)
+        out(f"静止下垂: 读数中位数 {rest_adc:.1f}, 噪声(MAD) {rest_sd:.2f} LSB, 跳变点 {n_out} 个"
+            + ("（下垂位置落在电位器端点附近，偶发读数跳到另一端，属正常）" if n_out else ""))
+    r = analyse_swing(t[swing], adc[swing], rest_adc, min_amp_deg=min_amp)
+    fits["analysis"] = fits["A"] = r
+    for ln in r.lines():
+        out(ln)
+    c = r.calibration.describe()
+    d_up = c["implied_upright_adc"] - cal.adc_upright
+    out(f"  配置中的直立读数 {cal.adc_upright:.1f}：相差 {d_up:+.1f} LSB = {np.degrees(d_up / r.calibration.K):+.2f}°"
+        "（电位器线性度 ±0.5 % 时外推 180° 的不确定度约 ±10 LSB；最终以卡尔曼零偏估计为准）")
     try:
-        fits["two_sided"] = fe = fit_free_decay(t, phi, min_amp_deg=min_amp)
-        out("method A2 (both sides, half cycles)  [biased by the wrap offset on this rig]: " + fe.summary())
+        fb = ls_free_swing(r.t, r.phi, wf=40.0, t_start=float(r.t_ext[0]), drag=True)
+        fits["B"] = fb
     except ValueError as e:
-        out(f"method A2 failed: {e}")
-    segs_phi = np.where(np.sign(phi) == side, phi, np.nan)  # same-side samples only (no wrap offset)
-    try:
-        fits["svf_ls"] = fl = ls_free_swing(t, segs_phi, t_start=float(te[0]) if len(te) else None)
-        out("method B (state-variable filter + least squares on the ODE, same side): " + fl.summary())
-    except ValueError as e:
-        out(f"method B failed: {e}")
+        fb = None
+        out(f"方法 B 失败: {e}")
+    out("")
+    out("== 方法比较 ==")
+    out(f"方法 A（转折点 + 能量平衡，推荐）  ω0 = {r.omega0:.4f} rad/s  c={r.viscous_c:.4f} γ={r.coulomb_gamma:.4f} d={r.quad_d:.5f}")
+    if fb is not None:
+        dev = (fb.omega0 - r.omega0) / r.omega0 * 100
+        out(f"方法 B（状态变量滤波 + 最小二乘）  ω0 = {fb.omega0:.4f} rad/s  c={fb.viscous_c:.4f} γ={fb.coulomb_gamma:.4f} "
+            f"d={fb.quad_d:.5f}   ω0 偏差 {dev:+.2f} %")
+        out("  B 的 ω0 可信；B 的阻尼项不可信：死区正好切掉了每次摆过最低点时速度最大的一段，"
+            "粘性/库仑/空气阻力三个回归量在剩下的数据里高度相关。A 用能量平衡积分了整个半周期，不受影响。")
+    v, cc = fit_decay_summary_both()
+    out(f"秒表法（20 次 24.85 s，90°→50°）: 粘性模型 {v.omega0:.4f} / 库仑模型 {cc.omega0:.4f} rad/s")
     return fits
 
 
@@ -97,10 +109,12 @@ def cmd_identify(args) -> None:
     if args.csv:
         cfg = _cfg(args)
         fits = identify_csv(args.csv, cfg, args.min_amp)
-        fe = fits["one_sided"]
+        fe = fits["A"]
         if args.write:
-            update_config_file(args.write, ["plant"], {"omega0": round(fe.omega0, 5), "viscous_c": round(fe.viscous_c, 5),
-                                                       "coulomb_gamma": round(fe.coulomb_gamma, 5), "source": f"free decay {args.csv}"})
+            update_config_file(args.write, ["plant"], {
+                "omega0": round(fe.omega0, 5), "viscous_c": round(fe.viscous_c, 5),
+                "coulomb_gamma": round(fe.coulomb_gamma, 5), "quad_d": round(fe.quad_d, 6),
+                "source": f"free swing {args.csv} (method A)"})
             print(f"plant parameters (method A) written to {args.write}")
     else:
         a0, a1, n, T = args.summary
@@ -238,7 +252,7 @@ def _calib_or_default(cfg):
     from .hw.sensor import AngleCalibration
 
     c = cfg["hardware"]["calibration"]
-    return AngleCalibration(c.get("adc_upright") or 1966.0, c.get("counts_per_rad") or 676.7, c.get("sign") or 1)
+    return AngleCalibration(c.get("adc_upright") or 1966.0, c.get("counts_per_rad") or 678.1, c.get("sign") or 1)
 
 
 def _hw_overrides(cfg, args):
@@ -381,6 +395,37 @@ def cmd_driver(args) -> None:
         port.close()
 
 
+def cmd_drivertest(args) -> None:
+    """Guided, safe answers to the open driver questions (0 rpm, Modbus padding, limit switches)."""
+    from .tools.drivertest import DriverSelfTest
+
+    cfg = _cfg(args)
+    steps = tuple(args.steps.split(","))
+    if args.sim:
+        import math
+
+        from .hw.fake import FakeRig
+        from .hw.pd42s1 import PD42S1
+
+        protocol = args.protocol or "modbus"
+        rig = FakeRig(plant_from(cfg), protocol, theta0=math.pi, mode=2)  # starts like the real one: torque mode
+        rig.start()
+        drv = PD42S1(rig.motor_port, protocol, timeout=0.05)
+        print("== 演练模式：驱动器模拟器（没有限位开关，第 3 步应显示“没停”） ==")
+        try:
+            DriverSelfTest(drv, mm_per_rev=args.mm_per_rev, rpm_move=args.rpm, rpm_limit=args.rpm_limit,
+                           log_dir=cfg["hardware"]["log_dir"]).run(steps)
+        finally:
+            rig.stop()
+        return
+    drv, port = _driver(cfg, args)
+    try:
+        DriverSelfTest(drv, mm_per_rev=args.mm_per_rev, rpm_move=args.rpm, rpm_limit=args.rpm_limit,
+                       log_dir=cfg["hardware"]["log_dir"], config_path=args.write).run(steps)
+    finally:
+        port.close()
+
+
 def cmd_run(args) -> None:
     import time
 
@@ -448,7 +493,7 @@ def cmd_sil(args) -> None:
     rig.start()
     sensor = SensorReader(rig.sensor_port)
     sensor.start()
-    motor = make_worker(PD42S1(rig.motor_port, proto, timeout=0.02), hw, fake_units())
+    motor = make_worker(PD42S1(rig.motor_port, proto, timeout=0.05), hw, fake_units())  # same as open_driver
     motor.start()
     loop = HardwareLoop(cfg, sensor, motor, RunOptions(args.algo, "closed", args.duration, log_path=args.log,
                                                         adapt=args.adapt), AngleCalibration())
@@ -578,6 +623,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("action", choices=["info", "prepare", "enable", "disable", "brake", "clear", "recover", "speed-mode",
                                       "zero", "limits-on", "limits-off", "save"])
     hw_opts(p, True)
+
+    p = add("drivertest", cmd_drivertest, "guided driver self-test: 0 rpm stop, Modbus padding, limit switches (slow, safe)")
+    p.add_argument("--sim", action="store_true", help="rehearse against the driver emulator (no hardware)")
+    p.add_argument("--steps", default="0,1,2,3,4", help="subset of steps, e.g. 0,1,2")
+    p.add_argument("--rpm", type=float, default=20.0, help="speed for the 0-rpm stop test")
+    p.add_argument("--rpm-limit", dest="rpm_limit", type=float, default=10.0, help="speed for the limit-switch test")
+    p.add_argument("--mm-per-rev", dest="mm_per_rev", type=float, default=40.0, help="belt travel estimate until calibrated")
+    p.add_argument("--write", help="config JSON to store the belt calibration (step 4)")
+    hw_opts(p)
 
     p = add("run", cmd_run, "real-time control on the rig (shadow or closed)")
     p.add_argument("--algo", default="lqr", choices=[a for a in ALGORITHMS if a != "swingup"])

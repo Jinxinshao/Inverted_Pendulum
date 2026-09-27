@@ -18,7 +18,13 @@ Modbus-RTU ("modbus协议") - the register address is the custom function code
     exception: addr (func|0x80) errcode CRC (1 func, 2 address, 3 value, 4 device)
     CRC16/MODBUS (poly 0xA001, init 0xFFFF), LOW byte first on the wire
     (the manual's table says "CRC16_H, CRC16_L" but the logged frames are low-first).
-    Odd data lengths are padded with a leading 0x00 byte.
+    Odd data lengths, as seen in the official software's logs:
+      * 06H writes of a 1-byte value: the byte is the LOW byte of the register
+        (01 06 00 FA 00 01 = disable), i.e. a leading 0x00;
+      * 04H read replies: the 0x00 pad comes AFTER the data (0x31, 39 bytes, is
+        answered with 40 bytes ending in "... 00 00 00 | 00"). For 1-byte reads
+        both conventions give the same value because the pad is zero, so the
+        client takes the OR of the two bytes.
 
 Numbers: all multi-byte integers big-endian; float32 big-endian IEEE-754
 (e.g. speed 50.0 rpm = 42 48 00 00). Position: 51200 counts per motor turn.
@@ -174,6 +180,17 @@ def build_modbus_write(address: int, code: int, data: bytes) -> bytes:
     if len(d) != 2:
         raise ValueError(f"code 0x{code:02X}: 06H write carries exactly one register")
     return _with_crc(bytes([address, 0x06, 0x00, code]) + d)
+
+
+def unpad_read(d: bytes, n: int) -> bytes:
+    """Data bytes of an 04H reply for a code with ``n`` data bytes.
+
+    Odd ``n``: the driver appends one 0x00 (official log of 0x31). A 1-byte value
+    may sit in either byte of its register; the pad is zero, so OR them.
+    """
+    if n == 1 and len(d) >= 2:
+        return bytes([d[0] | d[1]])
+    return d[:n]
 
 
 def build_modbus_read(address: int, code: int) -> bytes:
@@ -348,9 +365,7 @@ class PD42S1:
         tx = build_modbus_read(self.address, code) if data is None else build_modbus_write(self.address, code, data)
         d, _ = self._exchange(tx, lambda rx: check_modbus_reply(tx, rx))
         if data is None:
-            n = READ_LEN[code]
-            d = d[1:] if len(d) == n + 1 else d  # odd length: drop the padding byte
-            return d[:n] if len(d) >= n else d
+            return unpad_read(d, READ_LEN[code])
         return d
 
     def read(self, code: int) -> bytes:

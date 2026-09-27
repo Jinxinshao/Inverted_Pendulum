@@ -37,7 +37,7 @@ def _build_and_run(spec: dict, q, stop_ev) -> None:  # runs in the child process
             rig = FakeRig(plant_from(cfg), hw.get("motor_protocol", "custom"), theta0=math.radians(1.0))
             rig.start()
             sensor = SensorReader(rig.sensor_port)
-            drv = PD42S1(rig.motor_port, hw.get("motor_protocol", "custom"), timeout=0.02)
+            drv = PD42S1(rig.motor_port, hw.get("motor_protocol", "custom"), timeout=0.05)  # same as open_driver
             motor = make_worker(drv, hw, fake_units())
             calib = AngleCalibration()
             run_mode = "closed"

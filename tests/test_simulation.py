@@ -31,7 +31,7 @@ def test_bias_state_compensates_zero_calibration_error(offset):
     c["sim"]["duration"] = 12
     r = _run_sim("lqr", c)
     assert r.balanced
-    assert np.degrees(r["bias_hat"][-1]) == pytest.approx(-offset / 676.7 * 57.2958, abs=0.1)
+    assert np.degrees(r["bias_hat"][-1]) == pytest.approx(-offset / CFG["sim"]["sensor"]["counts_per_rad"] * 57.2958, abs=0.1)
     assert abs(np.mean(r["x"][-400:])) < 0.01
 
 
@@ -41,7 +41,7 @@ def test_without_bias_state_the_cart_offset_follows_the_gain_ratio():
     c["estimator"]["estimate_bias"] = False
     c["sim"]["duration"] = 15
     r = _run_sim("lqr", c)
-    delta = 6 / 676.7  # rad, measured angle is too large by delta
+    delta = 6 / CFG["sim"]["sensor"]["counts_per_rad"]  # rad, measured angle is too large by delta
     from pendulum_lab.config import make_controller, plant_from
 
     ctl = make_controller("lqr", plant_from(c), c)

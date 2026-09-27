@@ -86,10 +86,10 @@ def fig_bias():
             c["sim"]["duration"] = 12
             r = _run_sim("lqr", c)
             ls = "-" if bias else "--"
-            lab = f"zero error {off / 676.7 * 57.3:.1f} deg, bias state {'on' if bias else 'off'}"
+            lab = f"zero error {off / 678.1 * 57.3:.1f} deg, bias state {'on' if bias else 'off'}"
             ax[0].plot(r["t"], r["x"] * 100, ls, label=lab)
             if bias:
-                ax[1].plot(r["t"], np.degrees(r["bias_hat"]), label=f"estimated bias, true {-off / 676.7 * 57.3:.2f} deg")
+                ax[1].plot(r["t"], np.degrees(r["bias_hat"]), label=f"estimated bias, true {-off / 678.1 * 57.3:.2f} deg")
     ax[0].set_ylabel("x [cm]")
     ax[1].set_ylabel("bias_hat [deg]")
     ax[1].set_xlabel("t [s]")
@@ -129,6 +129,57 @@ def fig_free_swing():
     plt.close(fig)
 
 
+def fig_real_swing():
+    """First recording on the rig: raw ADC, cleaned angle, amplitude decay and period check."""
+    from pendulum_lab.model.swing_analysis import analyse_swing
+    from pendulum_lab.tools.hwtools import load_sensor_csv, split_rest_swing
+
+    t, adc, ph = load_sensor_csv(str(OUT.parent.parent / "tests" / "data" / "swing_20260927_151631.csv"), with_phase=True)
+    rest, sw = split_rest_swing(t, ph)
+    r = analyse_swing(t[sw], adc[sw], float(np.median(adc[rest])))
+    fig, ax = plt.subplots(2, 2, figsize=(13, 7.5))
+    ts, a = t[sw], adc[sw]
+    m = (ts > 49.9) & (ts < 51.4)
+    ax[0, 0].plot(ts[m], a[m], ".-", ms=3, lw=0.5)
+    ax[0, 0].set_title("raw ADC around two bottom passes: plateaus 4092 / 0..1 and glitches in between")
+    ax[0, 0].set_xlabel("t [s]")
+    ax[0, 0].set_ylabel("ADC")
+    ax[0, 1].plot(r.t, np.degrees(r.phi), lw=0.5)
+    ax[0, 1].plot(r.t_ext, np.degrees(r.side * r.amp), "o", ms=2.5)
+    ax[0, 1].set_title("angle from the bottom after cleaning (gaps = dead zone), turning points")
+    ax[0, 1].set_xlabel("t [s]")
+    ax[0, 1].set_ylabel("deg")
+    for s_, mk in ((1, "o"), (-1, "s")):
+        k = r.side == s_
+        ax[1, 0].plot(r.t_ext[k], np.degrees(r.amp[k]), mk, ms=3, label=f"{'+' if s_ > 0 else '-'} side")
+    tm_, pm_ = simulate_free_swing(r.omega0, r.viscous_c, r.coulomb_gamma, a0=float(r.amp[0]),
+                                   duration=float(r.t_ext[-1] - r.t_ext[0]) + 0.5, fs=200, d=r.quad_d)
+    te_, ve_ = extrema(tm_, pm_)
+    ax[1, 0].plot(te_ + r.t_ext[0], np.degrees(np.abs(ve_)), "k-", lw=0.8,
+                  label=f"model: c={r.viscous_c:.3f} 1/s, d={r.quad_d:.4f} 1/rad")
+    tv_, pv_ = simulate_free_swing(r.omega0, 0.0519, 0.0, a0=float(r.amp[0]), duration=float(r.t_ext[-1] - r.t_ext[0]) + 0.5, fs=200)
+    te2, ve2 = extrema(tv_, pv_)
+    ax[1, 0].plot(te2 + r.t_ext[0], np.degrees(np.abs(ve2)), "r--", lw=0.8, label="best viscous-only model")
+    ax[1, 0].set_title("amplitude decay: air drag is needed at large amplitude")
+    ax[1, 0].set_xlabel("t [s]")
+    ax[1, 0].set_ylabel("amplitude [deg]")
+    ax[1, 0].legend(fontsize=8)
+    per = r.t_ext[2:] - r.t_ext[:-2]
+    aeff = 0.25 * (r.amp[:-2] + 2 * r.amp[1:-1] + r.amp[2:])
+    ax[1, 1].plot(np.degrees(aeff), per, ".", ms=4, label="measured full periods")
+    A = np.linspace(15, 95, 100)
+    ax[1, 1].plot(A, r.T0 * period_factor(np.radians(A)), "k-", lw=0.8, label=f"T0 * 2K(sin^2(A/2))/pi, T0 = {r.T0:.4f} s")
+    ax[1, 1].set_title(f"period vs amplitude -> omega0 = {r.omega0:.4f} rad/s, sensor {r.calibration.K:.1f} LSB/rad")
+    ax[1, 1].set_xlabel("amplitude [deg]")
+    ax[1, 1].set_ylabel("period [s]")
+    ax[1, 1].legend(fontsize=8)
+    for a_ in ax.flat:
+        a_.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(OUT / "real_swing.png", dpi=110)
+    plt.close(fig)
+
+
 def fig_poles():
     fig, ax = plt.subplots(figsize=(6, 6))
     th = np.linspace(0, 2 * math.pi, 400)
@@ -147,6 +198,6 @@ def fig_poles():
 
 
 if __name__ == "__main__":
-    for f in (fig_compare, fig_delay_sweep, fig_estimators, fig_bias, fig_swingup, fig_free_swing, fig_poles):
+    for f in (fig_compare, fig_delay_sweep, fig_estimators, fig_bias, fig_swingup, fig_free_swing, fig_real_swing, fig_poles):
         f()
         print("ok", f.__name__)

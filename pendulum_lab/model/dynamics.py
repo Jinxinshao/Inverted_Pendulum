@@ -6,7 +6,7 @@ Input:                        a  (cart acceleration actually realised by the bel
     x_d     = v
     v_d     = a
     theta_d = omega
-    omega_d = alpha sin(theta) - beta cos(theta) a - c omega - gamma sign(omega)
+    omega_d = alpha sin(theta) - beta cos(theta) a - c omega - gamma sign(omega) - d omega |omega|
 
 Design models
 -------------
@@ -33,6 +33,7 @@ STATE_NAMES = ("x", "v", "theta", "omega")
 def pendulum_accel(p: PlantParams, theta: float, omega: float, a: float, coulomb_eps: float = 1e-3) -> float:
     """Angular acceleration of the pendulum for a given cart acceleration."""
     fr = p.coulomb_gamma * math.tanh(omega / coulomb_eps) if p.coulomb_gamma else 0.0
+    fr += p.quad_d * omega * abs(omega)
     return p.alpha * math.sin(theta) - p.beta * math.cos(theta) * a - p.viscous_c * omega - fr
 
 

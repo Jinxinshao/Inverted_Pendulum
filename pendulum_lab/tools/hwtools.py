@@ -90,14 +90,32 @@ def save_sensor_csv(data, path: str) -> None:
             w.writerow([f"{t - t0:.6f}", a, "" if m is None else m])
 
 
-def load_sensor_csv(path: str) -> tuple[np.ndarray, np.ndarray]:
-    t, a = [], []
+def load_sensor_csv(path: str, with_phase: bool = False):
+    """t, adc (and the 'phase' column rest/swing written by record_potentiometer.py, '' if absent)."""
+    t, a, ph = [], [], []
     with open(path, encoding="utf-8") as f:
         rd = csv.DictReader(f)
         for row in rd:
             t.append(float(row["t"]))
             a.append(float(row["adc"]))
+            ph.append(row.get("phase") or "")
+    if with_phase:
+        return np.array(t), np.array(a), np.array(ph)
     return np.array(t), np.array(a)
+
+
+def split_rest_swing(t: np.ndarray, phase: np.ndarray | None = None, rest_s: float = 2.5) -> tuple[np.ndarray, np.ndarray]:
+    """Boolean masks (rest, swing). Priority: phase column; a pause > 1 s (the recorder
+    waits for Enter between the two phases); else the first ``rest_s`` seconds."""
+    if phase is not None and np.any(phase == "rest") and np.any(phase == "swing"):
+        return phase == "rest", phase == "swing"
+    gaps = np.diff(t)
+    if len(gaps) and gaps.max() > 1.0:
+        k = int(np.argmax(gaps)) + 1
+        idx = np.arange(len(t))
+        return idx < k, idx >= k
+    rest = t < t[0] + rest_s
+    return rest, ~rest
 
 
 def swing_angle_from_adc(adc: np.ndarray, calib: AngleCalibration, lo: int = 20, hi: int = 4075) -> np.ndarray:
@@ -139,6 +157,11 @@ def calibrate_angle_interactive(port_name: str, baud: int, out=print, ask=input)
         cpr_meas = abs(down - up) / math.pi
         cpr_sheet = 4095 / math.radians(345.0)
         out(f"         slope from gravity reference: {cpr_meas:.1f} counts/rad; datasheet: {cpr_sheet:.1f} counts/rad")
+        if down > 4075 or down < 20:
+            # the hanging reading is clipped at the track end: not a valid 180 deg reference
+            cpr_meas = AngleCalibration().counts_per_rad
+            out(f"         hanging reading is clipped at the track end -> using the free-swing slope {cpr_meas:.1f} "
+                "(identify --csv gives the value for your rod)")
         out("Step C - sign. Tilt the rod ~10 deg TOWARD the end of the rail the cart moves to for a")
         out("         POSITIVE speed command (docs/05 step 4 defines it; before that: toward the motor), press Enter.")
         ask()

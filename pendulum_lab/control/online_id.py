@@ -46,34 +46,67 @@ from ..model.params import PlantParams
 
 
 class SVF:
-    """Exact ZOH discretisation of F(s) in controllable form; returns (f, f_d, f_dd).
+    """State-variable filter F(s) = wf^2/(s^2 + 2 zeta wf s + wf^2); returns (f, f_d, f_dd).
 
-    Consistent pairing: with a sampled (ZOH) input the continuous f_dd jumps by
-    wf^2 * du at every sample (for wf = 30 rad/s that was a 17 % error and biased
-    every estimate). We therefore return, for the interval [k-1, k]:
+    Two exact discretisations, chosen by what the INPUT really is between samples:
+
+    ``hold="zoh"`` (default) - the input is piecewise constant, e.g. a cart
+    acceleration command held by the driver. With a ZOH input the continuous
+    f_dd jumps by wf^2 * du at every sample (for wf = 30 rad/s a 17 % error),
+    so the outputs are paired over the interval [k-1, k]:
         f_dd = (f_d[k] - f_d[k-1]) / Ts    (exact mean of f_dd over the interval)
-        f, f_d = trapezoidal means over the same interval
-    Both sides of a regression must be passed through the same SVF so they get
-    the same half-sample alignment.
+        f, f_d = trapezoidal means over the same interval.
+
+    ``hold="foh"`` - the input is a SMOOTH signal that was sampled (an angle).
+    Linear interpolation between samples; the states at the sample instants
+    are the exact response to the interpolant and f_dd = wf^2 (u - f) -
+    2 zeta wf f_d is continuous. One more correction is needed: f_dd = s^2 F
+    has the direct feed-through wf^2 u, so the interpolation error of u (mean
+    -Ts^2 u_dd / 12 per interval, seen by f but not by the sample u_k) is
+    amplified by wf^2 and sampled synchronously. The result is a constant
+    relative error of f_dd of  -(wf Ts)^2 / 12  for every low-frequency signal
+    (measured on noiseless pendulum data at Ts = 5 ms: alpha 0.08 / 0.33 /
+    0.74 % low for wf = 20 / 40 / 60 rad/s, formula 0.08 / 0.33 / 0.75 %; the
+    ZOH pairing has the same error). f_dd is divided by (1 - (wf Ts)^2 / 12).
+
+    Both sides of a regression must be passed through the same SVF.
     """
 
-    def __init__(self, Ts: float, wf: float = 20.0, zeta: float = 0.8):
+    def __init__(self, Ts: float, wf: float = 20.0, zeta: float = 0.8, hold: str = "zoh"):
+        if hold not in ("zoh", "foh"):
+            raise ValueError("hold must be 'zoh' or 'foh'")
         A = np.array([[0.0, 1.0], [-wf * wf, -2 * zeta * wf]])
         B = np.array([[0.0], [wf * wf]])
-        M = np.zeros((3, 3))
-        M[:2, :2], M[:2, 2:] = A, B
-        E = expm(M * Ts)
-        self.Ad, self.Bd = E[:2, :2], E[:2, 2]
-        self.A = A
-        self.Ts = Ts
-        self.wf2 = wf * wf
+        if hold == "zoh":
+            M = np.zeros((3, 3))
+            M[:2, :2], M[:2, 2:] = A, B
+            E = expm(M * Ts)
+            self.Ad, self.Bd = E[:2, :2], E[:2, 2]
+            self.B1 = np.zeros(2)
+        else:  # augmented state [x, u, du]: u' = du / Ts
+            M = np.zeros((4, 4))
+            M[:2, :2], M[:2, 2:3] = A, B
+            M[2, 3] = 1.0 / Ts
+            E = expm(M * Ts)
+            self.Ad, self.Bd, self.B1 = E[:2, :2], E[:2, 2], E[:2, 3]
+        self.A, self.Ts, self.hold = A, Ts, hold
+        self.dd_gain = 1.0 / (1.0 - (wf * Ts) ** 2 / 12.0) if hold == "foh" else 1.0
+        self.wf, self.zeta, self.wf2 = wf, zeta, wf * wf
         self.x = np.zeros(2)
+        self.u_prev: float | None = None
 
-    def reset(self, value: float = 0.0) -> None:
-        self.x = np.array([value, 0.0])
+    def reset(self, value: float = 0.0, slope: float = 0.0) -> None:
+        self.x = np.array([value, slope])
+        self.u_prev = value
 
     def step(self, u: float) -> tuple[float, float, float]:
         x_old = self.x
+        if self.hold == "foh":
+            up = u if self.u_prev is None else self.u_prev
+            self.x = self.Ad @ self.x + self.Bd * up + self.B1 * (u - up)
+            self.u_prev = u
+            f, fd = self.x
+            return float(f), float(fd), float(self.dd_gain * (self.wf2 * (u - f) - 2 * self.zeta * self.wf * fd))
         self.x = self.Ad @ self.x + self.Bd * u
         f = 0.5 * (x_old[0] + self.x[0])
         fd = 0.5 * (x_old[1] + self.x[1])
@@ -81,9 +114,9 @@ class SVF:
         return f, fd, fdd
 
 
-def svf_filter(signal: np.ndarray, Ts: float, wf: float = 20.0, zeta: float = 0.8) -> np.ndarray:
+def svf_filter(signal: np.ndarray, Ts: float, wf: float = 20.0, zeta: float = 0.8, hold: str = "zoh") -> np.ndarray:
     """Filter a whole array; returns an (N, 3) array of (f, f_d, f_dd)."""
-    s = SVF(Ts, wf, zeta)
+    s = SVF(Ts, wf, zeta, hold)
     s.reset(float(signal[0]))
     return np.array([s.step(float(u)) for u in signal])
 
@@ -95,16 +128,23 @@ class LSFit:
     coulomb_gamma: float
     rms_residual: float
     n: int
+    quad_d: float = 0.0
 
     def summary(self) -> str:
         return (f"LS/SVF: omega0={self.omega0:.4f} rad/s, c={self.viscous_c:.4f} 1/s, "
-                f"gamma={self.coulomb_gamma:.4f} rad/s^2 (n={self.n}, rms residual {self.rms_residual:.3f})")
+                f"gamma={self.coulomb_gamma:.4f} rad/s^2, d={self.quad_d:.5f} 1/rad "
+                f"(n={self.n}, rms residual {self.rms_residual:.3f})")
 
 
-def _svf_from(signal: np.ndarray, Ts: float, wf: float, f0: float, fd0: float) -> np.ndarray:
-    s = SVF(Ts, wf)
+def _svf_from(signal: np.ndarray, Ts: float, wf: float, f0: float, fd0: float, hold: str = "foh") -> np.ndarray:
+    """Filter a segment starting from state (f0, fd0) AT sample 0 (FOH) or before it (ZOH)."""
+    s = SVF(Ts, wf, hold=hold)
     s.x = np.array([f0, fd0])
-    return np.array([s.step(float(u)) for u in signal])
+    if hold == "zoh":
+        return np.array([s.step(float(u)) for u in signal])
+    s.u_prev = float(signal[0])
+    first = (f0, fd0, s.dd_gain * (s.wf2 * (float(signal[0]) - f0) - 2 * s.zeta * wf * fd0))
+    return np.array([first] + [s.step(float(u)) for u in signal[1:]])
 
 
 def _valid_runs(valid: np.ndarray, min_len: int) -> list[tuple[int, int]]:
@@ -122,8 +162,11 @@ def _valid_runs(valid: np.ndarray, min_len: int) -> list[tuple[int, int]]:
 
 
 def ls_free_swing(t: np.ndarray, phi: np.ndarray, wf: float = 60.0, min_rate: float = 0.05,
-                  t_start: float | None = None, settle: float = 0.1) -> LSFit:
+                  t_start: float | None = None, settle: float = 0.1, drag: bool = False) -> LSFit:
     """Least squares on  phi_dd = -alpha sin(phi) - c phi_d - gamma sign(phi_d)  (phi from the bottom).
+
+    ``drag=True`` adds the air-drag term  - d phi_d |phi_d|  (regressor built from
+    the filtered rate, i.e. F[phi_d |phi_d|] ~ f_d |f_d| - adequate for wf >> omega0).
 
     Runs the SVF separately over every contiguous VALID segment (the
     potentiometer dead zone splits the record every half cycle), discards the
@@ -169,15 +212,19 @@ def ls_free_swing(t: np.ndarray, phi: np.ndarray, wf: float = 60.0, min_rate: fl
         m = np.zeros(len(seg), bool)
         m[skip:] = True
         m &= np.abs(P[:, 1]) > min_rate
-        Xs.append(np.column_stack([-S, -P[:, 1], -G])[m])
+        cols = [-S, -P[:, 1], -G]
+        if drag:
+            cols.append(-P[:, 1] * np.abs(P[:, 1]))
+        Xs.append(np.column_stack(cols)[m])
         Ys.append(P[m, 2])
     if not Xs:
         raise ValueError("no valid segments")
     X, y = np.vstack(Xs), np.concatenate(Ys)
     theta, *_ = np.linalg.lstsq(X, y, rcond=None)
-    alpha, c, gamma = theta
+    alpha, c, gamma = theta[:3]
     res = y - X @ theta
-    return LSFit(math.sqrt(max(alpha, 1e-9)), float(c), float(gamma), float(np.sqrt(np.mean(res**2))), int(len(y)))
+    return LSFit(math.sqrt(max(alpha, 1e-9)), float(c), float(gamma), float(np.sqrt(np.mean(res**2))), int(len(y)),
+                 float(theta[3]) if drag else 0.0)
 
 
 class OnlineOmegaRLS:

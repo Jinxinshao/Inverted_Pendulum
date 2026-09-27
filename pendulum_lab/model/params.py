@@ -20,6 +20,8 @@ Dividing by J gives the form actually used in the code:
     beta  = m*l/J   = alpha/g = 1/L_eq
     c     = b/J                       (viscous pivot damping)
     gamma = Tc/J                      (Coulomb pivot friction)
+    d                                 (air drag, - d*theta_d*|theta_d|; identified from
+                                       the real swing, zero slope at theta_d = 0)
 
 The key consequence: under kinematic actuation the whole pendulum model is fixed
 by ``omega0`` (measurable with a stopwatch) plus the small damping terms.
@@ -107,6 +109,7 @@ class PlantParams:
     omega0: float = 5.55            # rad/s, hanging small-amplitude natural frequency
     viscous_c: float = 0.028        # 1/s   (b/J)
     coulomb_gamma: float = 0.0      # rad/s^2 (Tc/J)
+    quad_d: float = 0.0             # 1/rad   (air drag: torque d*J*theta_d*|theta_d|)
     mass: float = 0.1054            # kg, pendulum
     l_c: float = 0.1726             # m, COM above pivot
     J: float = 5.80e-3              # kg m^2, about pivot

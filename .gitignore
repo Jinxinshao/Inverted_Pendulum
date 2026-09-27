@@ -5,5 +5,5 @@ build/
 dist/
 .venv/
 .pytest_cache/
-data/
+/data/
 config/physical_config.json

@@ -21,7 +21,9 @@ def test_hardware_loop_balances_fake_rig(protocol, tmp_path):
     rig.start()
     sensor = SensorReader(rig.sensor_port)
     sensor.start()
-    motor = make_worker(PD42S1(rig.motor_port, protocol, timeout=0.02), cfg["hardware"], fake_units())
+    # same reply timeout as the hardware path (open_driver): 20 ms was stricter than production and
+    # failed ~1 run in 5 when the fake rig's threads were starved of the GIL on a loaded machine
+    motor = make_worker(PD42S1(rig.motor_port, protocol, timeout=0.05), cfg["hardware"], fake_units())
     motor.start()
     log = tmp_path / "run.csv"
     loop = HardwareLoop(cfg, sensor, motor, RunOptions(algo, "closed", 3.0, log_path=str(log)), AngleCalibration(),
@@ -60,6 +62,9 @@ def test_shadow_mode_never_writes_to_motor():
     rig.stop()
     assert loop.result_message == "duration reached"
     assert writes == []
-    # rod held leaning +0.5 deg toward +x -> the controller would accelerate toward +x
-    a_ctrl = [r[13] for r in loop.rows if r[2] == "ACTIVE"]
-    assert a_ctrl and sum(a_ctrl) / len(a_ctrl) > 0
+    # rod held leaning +0.5 deg toward +x -> the controller's FIRST reaction is to accelerate
+    # toward +x. Later samples are not a sign test: the held rod ignores the commands, so the
+    # Kalman filter moves the persistent lean into its bias state (by design) and the mean over
+    # 1 s can have either sign.
+    a_ctrl = [r[13] for r in loop.rows if r[2] == "ACTIVE"][:20]
+    assert len(a_ctrl) == 20 and sum(a_ctrl) / len(a_ctrl) > 0

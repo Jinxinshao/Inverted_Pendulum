@@ -49,24 +49,32 @@ class SensorModel:
     """Potentiometer + 12-bit ADC as it really is (the 'truth')."""
 
     adc_upright: float = 1966.0     # true ADC reading at exactly upright
-    counts_per_rad: float = 676.7   # true slope
+    counts_per_rad: float = 678.1   # true slope (swing 2026-09-27, period-amplitude fit)
     sign: int = 1                   # +1: ADC increases when rod leans to +x
     noise_counts: float = 0.6       # std of electrical noise [counts]
     latency: float = 0.004          # s, sampling-to-PC transport
     full_scale: int = 4095
-    electrical_deg: float = 345.0   # WDD35D4: 345 deg electrical of 360 mechanical
+    electrical_deg: float = 345.0   # WDD35D4 datasheet (informative; the model uses full_scale/counts_per_rad)
     x_resolution: float = 2.5e-6    # m, cart position quantum from the motor encoder
     x_latency: float = 0.010        # s, age of the motor position reading
+    high_end: float = 4092.0        # highest reading the real board delivers (end terminal)
+    glitch_prob: float = 0.0        # chance of a random mid-range reading while the wiper is in the gap
 
     def adc_of(self, theta: float, rng: np.random.Generator | None) -> int:
-        span = self.full_scale / math.radians(self.electrical_deg)  # counts per rad along the track
-        phi_up = self.adc_upright / span  # angle along the track at upright [rad]
-        # the true slope may differ slightly from the nominal track slope (gain error)
-        phi = (phi_up + self.sign * theta * self.counts_per_rad / span) % (2 * math.pi)
-        if phi > math.radians(self.electrical_deg):
-            adc = float(self.full_scale)  # wiper beyond the track: reads the end terminal
+        # physically consistent: one turn of the rod is one turn of the wiper. The reading
+        # grows by counts_per_rad per rad along the track; the track (0..full_scale) covers
+        # full_scale / counts_per_rad rad (345 deg nominal, 347.3 deg measured on the rig)
+        span = self.counts_per_rad
+        phi = (self.adc_upright / span + self.sign * theta) % (2 * math.pi)
+        el = self.full_scale / span
+        if phi > el:
+            # wiper in the gap between the track ends (measured 2026-09-27): it reads the
+            # terminal it left (high end ~4092 / low end 0..1) and, while bridging, random values
+            if rng is not None and self.glitch_prob and rng.random() < self.glitch_prob:
+                return int(rng.integers(0, self.full_scale + 1))
+            adc = self.high_end if phi - el < 0.5 * (2 * math.pi - el) else 0.0
         else:
-            adc = phi * span
+            adc = min(phi * span, self.high_end)
         if rng is not None and self.noise_counts > 0:
             adc += rng.normal(0.0, self.noise_counts)
         return int(min(self.full_scale, max(0, round(adc))))
@@ -77,7 +85,7 @@ class Calibration:
     """What the software BELIEVES about the sensor (see hw/calibration.py)."""
 
     adc_upright: float = 1966.0
-    counts_per_rad: float = 676.7
+    counts_per_rad: float = 678.1
     sign: int = 1
 
     def theta_of(self, adc: float) -> float:

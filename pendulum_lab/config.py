@@ -15,26 +15,28 @@ from .control.controllers import LQR, AnglePD, CascadePID, Controller, EnergySwi
 from .control.estimators import DirtyDerivative, Estimator, HybridEstimator, KalmanEstimator, SwingEstimator
 from .control.safety import SafetyLimits
 from .model.params import PlantParams, default_params
-from .model.identification import fit_decay_summary
 
 ROOT = Path(__file__).resolve().parent.parent
 
 ALGORITHMS = ("pd", "pid", "lqr", "place", "swingup", "none")
 
 
+# Free-swing recording on the rig, 2026-09-27 (tests/data/swing_20260927_151631.csv):
+# release from 90.5 deg, 60 s, 97 full cycles; method A (turning points + energy
+# balance, sensor self-calibrated). Method B (SVF + LS) gives omega0 within 0.1 %.
+MEASURED_PLANT = {"omega0": 5.5147, "viscous_c": 0.0363, "coulomb_gamma": 0.0, "quad_d": 0.00297}
+
+
 def _plant_default() -> dict:
     p = default_params()
-    fit = fit_decay_summary()  # stopwatch test: 20 cycles, 90 -> 50 deg, 24.85 s
     return {
-        "omega0": round(fit.omega0, 4),
-        "viscous_c": round(fit.viscous_c, 4),
-        "coulomb_gamma": 0.0,
+        **MEASURED_PLANT,
         "mass": round(p.mass, 4),
         "l_c": round(p.l_c, 4),
         "J": round(p.J, 6),
         "cart_mass": 0.12,
         "g": 9.81,
-        "source": "free-swing summary fit (viscous model) + geometry",
+        "source": "free swing 2026-09-27, method A (geometry for mass/l_c/J)",
     }
 
 
@@ -75,7 +77,7 @@ DEFAULTS: dict = {
         "pid": {"wn": 8.0, "zeta": 1.0, "wo": 0.8, "zeta_o": 1.0, "ki": 0.0, "theta_ref_max_deg": 6.0},
         "lqr": {"q": [20.0, 5.0, 200.0, 5.0], "r": 0.2, "delay_aware": True, "include_lag": True, "q_integral": 0.0},
         "place": {"poles": [[-7.0, 5.0], [-7.0, -5.0], [-3.0, 0.0], [-2.0, 0.0]], "delay_aware": True, "include_lag": True},
-        "swingup": {"k_energy": 0.06, "a_max": 3.0, "kx": 15.0, "kv": 6.0, "catch_deg": 25.0},
+        "swingup": {"k_energy": 0.06, "a_max": 3.0, "kx": 25.0, "kv": 6.0, "catch_deg": 25.0},
     },
     "sim": {
         "duration": 10.0,
@@ -84,7 +86,7 @@ DEFAULTS: dict = {
         "rail_half": 0.30,
         "x_source": "encoder",
         "driver": {"tau": 0.015, "accel_limit": 20.0, "latency": 0.012, "jitter": 0.002, "backlash": 0.0},
-        "sensor": {"adc_upright": 1966.0, "counts_per_rad": 676.7, "sign": 1, "noise_counts": 0.6,
+        "sensor": {"adc_upright": 1966.0, "counts_per_rad": 678.1, "sign": 1, "noise_counts": 0.6,
                    "latency": 0.006, "x_resolution": 2.5e-6, "x_latency": 0.010},
         "calib_error": {"adc_upright_offset": 0.0, "counts_per_rad_scale": 1.0},
         "seed": 1,

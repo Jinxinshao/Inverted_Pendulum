@@ -6,7 +6,7 @@ import pytest
 
 from pendulum_lab.hw.pd42s1 import (
     PD42S1, FrameParser, build_custom, build_modbus_read, build_modbus_write, check_modbus_reply,
-    crc16_modbus, decode_homing, parse_hex, speed_payload, sum8,
+    crc16_modbus, decode_homing, decode_system, parse_hex, speed_payload, sum8, unpad_read,
 )
 
 # --- custom protocol log (设备系统 page) -------------------------------------
@@ -66,6 +66,43 @@ def test_modbus_read_request_and_padding():
     assert build_modbus_read(1, 0x31)[:6] == bytes([1, 4, 0, 0x31, 0, 20])  # 39 bytes -> 20 registers
 
 
+# --- Modbus-RTU log (设备系统 page, 2026-09-27): read version and system parameters
+MODBUS_READS = [
+    ("01 04 00 20 00 01 30 00", "01 04 02 11 0A 35 67"),
+    ("01 04 00 31 00 14 A1 CA",
+     "01 04 28 41 C3 4F F4 FF F8 40 74 F3 AA 3F DD 76 5E 40 82 9E BC 00 00 00 00 96 B8 00 00 96 CA "
+     "FF FF FF EE 00 00 00 00 00 00 00 00 CE A6"),
+]
+
+
+def test_modbus_read_frames_from_the_official_log():
+    for tx, rx in MODBUS_READS:
+        t, r = parse_hex(tx), parse_hex(rx)
+        assert build_modbus_read(t[0], t[3]) == t
+        payload, err = check_modbus_reply(t, r)
+        assert err == "" and len(payload) == r[2]  # byte count, CRC low byte first
+
+
+def test_odd_length_read_pad_is_trailing():
+    """The 39-byte system block comes back as 40 bytes with the 0x00 pad LAST;
+    decoding must reproduce exactly the values the official software shows."""
+    t, r = parse_hex(MODBUS_READS[1][0]), parse_hex(MODBUS_READS[1][1])
+    payload, _ = check_modbus_reply(t, r)
+    s = decode_system(unpad_read(payload, 39))
+    assert s["bus_voltage_V"] == pytest.approx(24.41, abs=5e-3)
+    assert s["phase_current_mA"] == -8
+    assert s["flux_mWb"] == pytest.approx(3.827, abs=1e-3)
+    assert s["phase_R_ohm"] == pytest.approx(1.730, abs=1e-3)
+    assert s["phase_L_mH"] == pytest.approx(4.082, abs=1e-3)
+    assert (s["speed_rpm"], s["target_pos"], s["position"], s["pos_error"], s["pulse_count"]) == (0, 38584, 38602, -18, 0)
+    assert s["enabled"] and not s["in_position"] and not s["stalled"]   # 电机使能 / 未到位 / 未堵转
+
+
+def test_one_byte_read_accepts_either_pad_position():
+    assert unpad_read(b"\x01\x00", 1) == b"\x01"
+    assert unpad_read(b"\x00\x01", 1) == b"\x01"
+
+
 def test_modbus_exception_is_reported():
     req = build_modbus_write(1, 0xF1, speed_payload(10, 0))
     exc = bytes([1, 0x90, 3])
@@ -120,3 +157,28 @@ def test_driver_against_emulator(protocol):
         assert d.zero_speed_rpm == 0.0
     finally:
         rig.stop()
+
+
+def test_driver_selftest_rehearsal(tmp_path):
+    """Guided self-test (steps 0-2) against the emulator: torque mode -> speed mode, 0 rpm stops."""
+    import math
+
+    from pendulum_lab.config import load_config, plant_from
+    from pendulum_lab.hw.fake import FakeRig
+    from pendulum_lab.tools.drivertest import DriverSelfTest
+
+    rig = FakeRig(plant_from(load_config()), "modbus", theta0=math.pi, mode=2)
+    rig.start()
+    answers = iter(["y", "y", "n", "", "R", "y"])  # values ok, switch mode, don't save, start, + goes right, disable
+    try:
+        t = DriverSelfTest(PD42S1(rig.motor_port, "modbus", timeout=0.05), out=lambda m: None,
+                           ask=lambda p: next(answers), log_dir=str(tmp_path))
+        res = t.run(("0", "1", "2"))
+    finally:
+        rig.stop()
+    assert rig.mode == 1 and not rig.enabled                    # speed mode, left disabled at the end
+    assert res["Q2"]["decode_plausible"] and res["Q2"]["one_byte_read_consistent"]
+    assert all(v["accepted"] and v["ok"] for v in res["Q1"].values())
+    assert t.plus_side == "右"
+    assert t.log_path.exists() and t.frames_path.exists()
+    assert "01 06 00 62 00 01" in t.frames_path.read_text()     # set work mode 1 (06H, value in the low byte)

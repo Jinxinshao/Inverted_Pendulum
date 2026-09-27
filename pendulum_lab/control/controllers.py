@@ -340,7 +340,7 @@ class EnergySwingUp(Controller):
     name = "swingup"
     label = "Energy swing-up + LQR catch"
 
-    def __init__(self, p: PlantParams, catch: Controller, k_energy: float = 0.06, a_max: float = 3.0, kx: float = 15.0, kv: float = 6.0,
+    def __init__(self, p: PlantParams, catch: Controller, k_energy: float = 0.06, a_max: float = 3.0, kx: float = 25.0, kv: float = 6.0,
                  catch_angle: float = math.radians(25.0), release_angle: float = math.radians(40.0)):
         self.p, self.catch = p, catch
         self.k_energy, self.a_max, self.kx, self.kv = k_energy, a_max, kx, kv
